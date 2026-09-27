@@ -1,0 +1,9 @@
+/data
+/dist
+/private
+data.enc
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+.wrangler/

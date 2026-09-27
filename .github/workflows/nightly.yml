@@ -1,0 +1,186 @@
+name: nightly
+
+# Every Systembolaget store's wines with stock, matched to Vivino, ratings on a rolling schedule, deployed to a
+# private site behind Cloudflare Access.
+#
+# This repository is public, so its logs, job summaries and caches are public too:
+# - The pipeline prints counts only: never wine names, Vivino names or ratings.
+# - Tracked state (which article is which Vivino id, hand verdicts) lives in a private repository, checked out with
+#   a deploy key and committed back there.
+# - Vivino data (ratings, match evidence, the Algolia response cache) is cached between runs only encrypted, with
+#   a key that is a repository secret (fork pull requests get no secrets).
+#
+# Nightly at 00:17 UTC (02:17 in Swedish summer, 01:17 in winter). Stock is skipped on Sunday mornings: stores are
+# closed on Sundays, and Monday's run has the same stock.
+
+on:
+  schedule:
+    - cron: "17 0 * * *"
+  workflow_dispatch:
+    inputs:
+      stock:
+        description: Fetch every store's stock
+        type: boolean
+        default: true
+      vivino:
+        description: Match new wines and refresh due ratings
+        type: boolean
+        default: true
+      match_limit:
+        description: Wines matched at most
+        default: "300"
+      refresh_limit:
+        description: Rating lookups at most (1 req/s)
+        default: "600"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+jobs:
+  nightly:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      PYTHONUNBUFFERED: "1"
+      TZ: Europe/Stockholm  # dates in the data and the app are Swedish time
+      WINE_STATE: ${{ github.workspace }}/private/state
+      DATA_KEY: ${{ secrets.DATA_KEY }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Private state
+        uses: actions/checkout@v7
+        with:
+          repository: Adishumla/wine-v2
+          ssh-key: ${{ secrets.STATE_DEPLOY_KEY }}
+          path: private
+          sparse-checkout: state
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - run: pip install -r requirements.txt
+
+      - name: Plan
+        id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          IN_STOCK: ${{ inputs.stock }}
+          IN_VIVINO: ${{ inputs.vivino }}
+        run: |
+          if [ "$EVENT" = workflow_dispatch ]; then
+            stock=$IN_STOCK; vivino=$IN_VIVINO
+          else
+            vivino=true; if [ "$(date -u +%u)" = 7 ]; then stock=false; else stock=true; fi
+          fi
+          echo "stock=$stock" >> "$GITHUB_OUTPUT"
+          echo "vivino=$vivino" >> "$GITHUB_OUTPUT"
+          echo "since=$(date +%s)" >> "$GITHUB_OUTPUT"
+          echo "Plan: stock=$stock vivino=$vivino"
+
+      - name: Restore data (encrypted)
+        uses: actions/cache/restore@v6
+        with:
+          path: data.enc
+          key: wine-data-${{ github.run_id }}
+          restore-keys: wine-data-
+
+      - name: Decrypt data
+        run: |
+          test -n "$DATA_KEY" || { echo "::error::DATA_KEY secret missing"; exit 1; }
+          if [ -f data.enc ]; then
+            openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass env:DATA_KEY -in data.enc | tar xzf -
+            rm data.enc
+          else
+            echo "No cached data: starting empty"
+          fi
+
+      - name: Offline tests
+        run: |
+          for t in test_matching test_net test_assortment test_pipeline test_ratings; do
+            python -m pipeline.tests.$t > /dev/null 2>&1 || { echo "::error::$t failed"; exit 1; }
+          done
+
+      - name: Stock (every store)
+        id: fetch
+        if: steps.plan.outputs.stock == 'true'
+        continue-on-error: true
+        run: python -m pipeline.run fetch
+
+      - name: Match new wines
+        id: match
+        if: steps.plan.outputs.vivino == 'true'
+        continue-on-error: true
+        run: python -m pipeline.run match --limit "${{ inputs.match_limit || '300' }}"
+
+      - name: Refresh ratings
+        id: refresh
+        if: steps.plan.outputs.vivino == 'true'
+        continue-on-error: true
+        run: python -m pipeline.run refresh --limit "${{ inputs.refresh_limit || '600' }}"
+
+      - name: Encrypt data
+        id: encrypt
+        if: always()
+        run: |
+          files=$(ls -d data/assortment.json data/ratings.json data/match_details.json data/review_queue.csv \
+                  data/cache/http/vivino 2>/dev/null || true)
+          if [ -z "$files" ]; then echo "nothing to save"; exit 0; fi
+          tar czf - $files | openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass env:DATA_KEY -out data.enc
+          ls -l data.enc
+
+      - name: Save data (encrypted)
+        if: always() && steps.encrypt.outcome == 'success'
+        continue-on-error: true  # a failed save must not stop the build and deploy
+        uses: actions/cache/save@v6
+        with:
+          path: data.enc
+          key: wine-data-${{ github.run_id }}
+
+      - name: Build
+        id: build
+        run: python -m pipeline.run build
+
+      - name: Commit state to the private repo
+        if: always() && steps.match.outcome != 'skipped'
+        working-directory: private
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          git add state/
+          if git diff --cached --quiet; then echo "state unchanged"; exit 0; fi
+          git commit -q -m "Nightly: state $(date +%F)"
+          git pull -q --rebase
+          git push -q
+
+      - uses: actions/setup-node@v7
+        if: steps.build.outcome == 'success'
+        with:
+          node-version: "22"
+
+      - name: Deploy behind Cloudflare Access
+        if: steps.build.outcome == 'success'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          mkdir -p dist
+          cp app/index.html app/*.js app/style.css dist/
+          cp -R data/app dist/data
+          npx --yes wrangler@4 pages deploy dist --project-name wine-v2 --branch main --commit-dirty=true > /dev/null
+          echo "deployed"
+
+      - name: Summary (counts only)
+        if: always()
+        run: python -m pipeline.summary --since "${{ steps.plan.outputs.since }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fail if a step failed
+        if: steps.fetch.outcome == 'failure' || steps.match.outcome == 'failure' || steps.refresh.outcome == 'failure'
+        run: |
+          echo "::error::fetch=${{ steps.fetch.outcome }} match=${{ steps.match.outcome }} refresh=${{ steps.refresh.outcome }}"
+          exit 1

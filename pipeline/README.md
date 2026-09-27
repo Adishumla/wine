@@ -1,0 +1,37 @@
+# pipeline
+
+Every store's wines with stock and shelf, matched to Vivino, built into the app's data files.
+
+```bash
+.venv/bin/python -m pipeline.run fetch          # every store's wines, stock and shelf -> data/assortment.json
+.venv/bin/python -m pipeline.run match          # new or changed wines, due re-searches (--limit N per run)
+.venv/bin/python -m pipeline.run refresh        # ratings due on the rolling schedule (--limit, default 600)
+.venv/bin/python -m pipeline.run report         # coverage and precision per assortment and cohort
+.venv/bin/python -m pipeline.run audit          # every group that still needs hand checks
+open data/review.html                           # R / W / U, then "Copy answers"
+pbpaste | .venv/bin/python -m pipeline.run labels
+.venv/bin/python -m pipeline.run build          # data/app/ for the app (app/README.md)
+```
+
+Steps:
+
+1. `fetch` lists every active store's wines with stock and shelf (`assortment.py` explains the method): per store one search page for its per-assortment counts and upcoming launches, the in-store range sliced by type, each store's order-only wines, then `site/stores/{productId}` once per wine. Each store's list must add up to its counts; a part that doesn't is fetched directly, and a store that still doesn't keeps its previous list ("stale", exit code 1). A range slice that stays short or a wine without stock data fails the step and keeps the previous file. Output: `data/assortment.json`.
+2. `match` applies `state/overrides.csv` first and reuses every stored row whose wine name, vintage and matcher version are unchanged; only new or changed wines go through the matcher (`matching.py`), widely carried wines first, up to `--limit`. Wines not found on Vivino are searched again with fresh responses: weekly for two months after launch, then monthly. Outputs: `state/matches.csv`, `data/review_queue.csv`, `data/match_details.json`, `data/match.json` (this run's counts, including accept/review/reject of the new wines per assortment).
+3. `refresh` (`ratings.py`) fetches ratings by Vivino id for every accept and override on a rolling schedule, low counts first: never fetched now, no rating yet every 2 days, under 100 ratings every 3, up to 1,000 weekly, above that monthly. At most `--limit` network lookups per run (600 by default). A failed lookup keeps the last value and its date and is retried after 1, 2, 4 … 30 days; repeated 403/429s or 5 server errors in a row stop the run. Outputs: `data/ratings.json`, `data/refresh.json`.
+4. `report` shows coverage and precision per group, and how many more hand checks each group needs for "≥ 95 % right at a 95 % lower bound". A group is an assortment within a cohort: "Fast sortiment" is the wines audited in phase 2, "Fast sortiment (new)" those first matched from phase 4 on. Output: `data/report.md`.
+5. `build` turns local state into the app's data files, with no network: `data/assortment.json`, the tracked matches, overrides and labels, and `data/ratings.json`. An accept shows its rating once its group meets the bar or Adam checked it right; until then it goes out as "unchecked", with no rating. Output: `data/app/` (`wines.json`, `avail/<store>.json`, `stores.json`, `meta.json`).
+
+Files:
+
+| Path | In git | Holds |
+|---|---|---|
+| `state/matches.csv` | yes | per article: Vivino id, band, scores, what it was matched on, matcher version, match and search dates, cohort |
+| `state/overrides.csv` | yes | article → Vivino id, or `none` for "no rating"; always wins |
+| `state/labels.csv` | yes | Adam's verdicts on (article, Vivino id) pairs, the only ground truth |
+| `data/` | no | cache, every store's wines, review queue, evidence, ratings, report; a symlink to `~/Library/Caches/wine-v2/data` |
+
+Tracked files hold ids, verdicts and dates only, never Vivino names or ratings.
+
+Every response is cached in `data/cache/`. Algolia queries are reused indefinitely (a due re-search takes responses under a day old), the stores' assortments and stock for 12 hours. Re-matching after a change to `matching.py` costs no network for queries already asked.
+
+Tests (no network): `python -m pipeline.tests.test_pipeline`, `test_assortment`, `test_ratings`, `test_matching`, `test_net`. `tests/mock.py` is the shared mocked Systembolaget (five stores), Algolia and api.vivino.com.

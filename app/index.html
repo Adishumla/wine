@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f6f3f1" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#16110f" media="(prefers-color-scheme: dark)">
+  <meta name="robots" content="noindex">
+  <title>Wine by Store</title>
+  <link rel="stylesheet" href="style.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <header class="top">
+    <button id="store-btn" class="store-btn" type="button" aria-haspopup="dialog">
+      <span class="store-label">Store</span>
+      <span id="store-name" class="store-name">Pick a store</span>
+      <span class="caret" aria-hidden="true"></span>
+    </button>
+    <div class="search">
+      <input id="q" type="search" placeholder="Name, producer, grape, region…" autocomplete="off"
+             autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="search" aria-label="Search wines">
+    </div>
+    <div class="chips" role="toolbar" aria-label="Filters and sort">
+      <label class="chip sel"><span class="sr">Sort</span><select id="sort">
+        <option value="adj">Best rated</option>
+        <option value="rating">Highest rating</option>
+        <option value="count">Most ratings</option>
+        <option value="price">Price: low to high</option>
+        <option value="price-desc">Price: high to low</option>
+        <option value="new">Newest</option>
+      </select></label>
+      <button class="chip tog" type="button" data-key="stock" aria-pressed="true">In stock</button>
+      <label class="chip sel"><span class="sr">Type</span><select id="type" data-key="type"></select></label>
+      <label class="chip sel"><span class="sr">Max price</span><select id="price" data-key="price"></select></label>
+      <label class="chip sel"><span class="sr">Min rating</span><select id="rating" data-key="rating"></select></label>
+      <label class="chip sel"><span class="sr">Min ratings count</span><select id="count" data-key="count"></select></label>
+      <label class="chip sel"><span class="sr">Country</span><select id="country" data-key="country"></select></label>
+      <button class="chip tog" type="button" data-key="rated" aria-pressed="false">Rated</button>
+      <button class="chip tog" type="button" data-key="organic" aria-pressed="false">Organic</button>
+      <button id="reset" class="chip reset" type="button" hidden>Reset</button>
+    </div>
+    <div class="summary"><span id="summary" aria-live="polite">Loading…</span><span id="fresh" class="fresh"></span></div>
+  </header>
+
+  <main>
+    <p id="note" class="note" hidden></p>
+    <div id="list" class="list"></div>
+    <p id="empty" class="empty" hidden>No wines match. <button id="empty-reset" type="button">Reset filters</button></p>
+  </main>
+
+  <template id="row-tpl">
+    <div class="row" role="button" tabindex="0">
+      <div class="score"><b class="avg"></b><small class="cnt"></small></div>
+      <div class="main">
+        <div class="name"><span class="n"></span> <span class="t"></span></div>
+        <div class="sub"></div>
+        <div class="stock"><span class="dot"></span><span class="st"></span><span class="shelf"></span></div>
+      </div>
+      <div class="price"><span class="p"></span><small class="vol"></small></div>
+    </div>
+  </template>
+
+  <dialog id="store-dlg" class="sheet tall" aria-label="Pick a store">
+    <div class="sheet-in">
+      <div class="sheet-head">
+        <h2>Pick a store</h2>
+        <button class="close" type="button" aria-label="Close">×</button>
+      </div>
+      <input id="store-q" type="search" placeholder="Store, street or town" autocomplete="off" autocorrect="off"
+             autocapitalize="off" spellcheck="false" aria-label="Search stores">
+      <div id="store-list" class="store-list"></div>
+      <p id="store-meta" class="meta"></p>
+    </div>
+  </dialog>
+
+  <dialog id="detail-dlg" class="sheet" aria-label="Wine details">
+    <div class="sheet-in" id="detail"></div>
+  </dialog>
+</body>
+</html>
