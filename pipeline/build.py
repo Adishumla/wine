@@ -76,7 +76,7 @@ def build() -> dict:
         ov = overrides.get(art)
         band = "override" if ov else m.get("band", "")
         vid = (ov["vivino_id"] if ov else m.get("vivino_id", "")) or ""
-        vid = "" if vid.lower() == "none" else vid
+        vid = "" if vid.lower() == "none" or not vid.strip().isdigit() else vid.strip()  # a typo in overrides: no id
         if band == "accept":
             verdict = labels.get((art, vid), {}).get("verdict")
             if verdict in ("wrong", "unsure"):

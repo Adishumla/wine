@@ -283,9 +283,9 @@ class Http:
                 return Resp(full_url, c["status"], c["text"], c.get("elapsed_ms"), True)
 
         if self.offline:
-            raise Offline(f"not cached: {method} {full_url}")
+            raise Offline(f"not cached: {method} {host}")  # no path or query: they can hold ids, logs may be public
         if group.blocked:
-            raise Blocked(f"{policy.group} is blocked; not sending {method} {full_url}")
+            raise Blocked(f"{policy.group} is blocked; not sending {method} to {host}")
 
         split = urlsplit(full_url)
         log_path = split.path + (f"?{split.query}" if split.query else "")

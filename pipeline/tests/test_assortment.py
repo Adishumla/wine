@@ -35,7 +35,7 @@ def test_every_store() -> None:
     # 0615: T14 has no row but is on the store's own pages, so it's listed, not stocked.
     assert "30014" in listed["0615"] and listed["0615"]["30014"] == [None, None]
     assert set(listed["0615"]) >= ids("5", range(5, 8)) and not s["0615"]["gaps"]
-    assert s["0102"]["gaps"] == {LOCAL: [7, 6]}
+    assert s["0102"]["gaps"] == {f"{LOCAL} / Rött vin": [7, 6]}  # fetched narrowly: local red wines only
     assert listed["0400"] == {} and listed["0311"] == {f"1{i:04d}": [0 if (10000 + i) % 7 == 0 else 6, f"A-{i:02d}"]
                                                         for i in range(0, 70, 5)}
     assert "30015" not in a["wines"] and a["counts"]["in_no_store"] == 1
@@ -46,6 +46,12 @@ def test_every_store() -> None:
     assert calls["stock"] == 102 + 16 + 6 + 11  # Plan A: every wine found, once; the other order-only wines never
     assert [x["siteId"] for x in a["store_info"]] == ["1208", "0102", "0615", "0311", "0400"]
     assert "phone" not in a["store_info"][0]
+    fresh()
+    run.PARTIAL_OK, old = 0.5, run.PARTIAL_OK  # 1 store of 5 off: a partial success (exit 2), not a failure
+    try:
+        assert run.main(["fetch"]) == 2
+    finally:
+        run.PARTIAL_OK = old
 
 
 def test_stale_store_keeps_previous_list() -> None:
@@ -71,14 +77,14 @@ def test_failures_keep_previous_file() -> None:
     finally:
         knobs["stock_fail"] = set()
     assert (DATA / assortment.OUT).read_text() == before
-    # More stores off than MAX_CRAWLS: the rest go stale instead of failing every store.
+    # More to fetch directly than MAX_CRAWL_PAGES allows: those stores go stale instead of failing every store.
     fresh()
     knobs["local_gap"] = False
-    assortment.MAX_CRAWLS, old = 0, assortment.MAX_CRAWLS
+    assortment.MAX_CRAWL_PAGES, old = 0, assortment.MAX_CRAWL_PAGES
     try:
         assert run.main(["fetch"]) == 1
     finally:
-        assortment.MAX_CRAWLS = old
+        assortment.MAX_CRAWL_PAGES = old
         reset_knobs()
     a = out()
     assert a["stores"]["0102"]["status"] == "stale" and a["stores"]["0102"].get("capped")
@@ -155,6 +161,28 @@ def test_stock_404_and_bad_bodies() -> None:
     before = (DATA / assortment.OUT).read_text()
     code, _ = run_with(stock_bad={"10001"})  # a 200 of the wrong shape is a failure, not "no rows"
     assert code == 1 and (DATA / assortment.OUT).read_text() == before
+
+
+def test_early_rows_and_narrow_fetches() -> None:
+    # U0 launches later; 0311 has bottles already (a row) but doesn't list it yet: listed, arriving, not counted.
+    u0 = BY_ID["20000"]
+    u0["_rows"].add("0311")
+    try:
+        code, a = run_with()
+    finally:
+        u0["_rows"].discard("0311")
+    assert code == 0 and a["stores"]["0311"]["status"] == "ok" and a["stores"]["0311"]["early"] == 1
+    assert listed("0311")["20000"] == [0 if 20000 % 7 == 0 else 6, "A-00"]
+    # 10005 (Fast, white) is in 1208's assortment without a row there: Fast and white are one short, so only
+    # 1208's white Fast wines are fetched directly, not the whole assortment.
+    y = BY_ID["10005"]
+    y["_rows"].discard("1208")
+    try:
+        code, a = run_with()
+    finally:
+        y["_rows"].add("1208")
+    assert code == 0 and a["stores"]["1208"]["status"] == "crawled" and listed("1208")["10005"] == [None, None]
+    assert calls[f"store 1208 {FAST_A} Vitt vin"] > 0 and calls[f"store 1208 {FAST_A} None"] == 0
 
 
 def test_build_offline() -> None:

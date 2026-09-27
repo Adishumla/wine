@@ -16,6 +16,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
+import httpx
+
 from .net import DATA, Http, Resp
 
 BASE = "https://api-extern.systembolaget.se/sb-api-ecommerce"
@@ -75,13 +77,18 @@ class SB:
     def get(self, path: str, params: dict | None = None, version: str = "v1", cache: bool = True,
             max_age: float | None = None) -> Resp:
         url = f"{BASE}/{version}/{path.lstrip('/')}"
-        r = self.http.get(url, params=params, headers={"Ocp-Apim-Subscription-Key": self.key()}, cache=cache,
-                          max_age=max_age)
-        if r.status == 401 and self.key_info.get("found_in") != "env":
-            # Key rotated since it was cached: extract again once.
-            self.key(refresh=True)
+        try:
             r = self.http.get(url, params=params, headers={"Ocp-Apim-Subscription-Key": self.key()}, cache=cache,
                               max_age=max_age)
+            if r.status == 401 and self.key_info.get("found_in") != "env":
+                # Key rotated since it was cached: extract again once.
+                self.key(refresh=True)
+                r = self.http.get(url, params=params, headers={"Ocp-Apim-Subscription-Key": self.key()},
+                                  cache=cache, max_age=max_age)
+        except httpx.HTTPError:
+            # A network error that outlived Http's retries: a failed request (status 0) the callers already handle
+            # (a retry round, a failed page, a stale store), not an exception that ends an hour-long step.
+            return Resp(url, 0, "", None, False)
         return r
 
     # -- product search ------------------------------------------------------

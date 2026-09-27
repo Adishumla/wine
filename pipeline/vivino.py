@@ -50,7 +50,7 @@ def search(http: Http, creds: dict, query: str, hits: int = 10, max_age: float |
     if r.status in (403, 429):
         raise Blocked(f"Algolia HTTP {r.status}")  # stop matching; stored rows stay as they are
     if not r.ok:
-        raise RuntimeError(f"Algolia HTTP {r.status}: {r.text[:200]}")
+        raise RuntimeError(f"Algolia HTTP {r.status}")  # never the body: logs may be public
     return [h for h in r.json().get("hits", []) if not h.get("hidden")]
 
 

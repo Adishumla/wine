@@ -12,7 +12,8 @@
 5. Plan A: site/stores/{productId} for every wine found lists each store that carries it, with stock and shelf.
 6. A store's list is the wines with a stock row there, plus the head's wines, plus its order-only wines, checked
    against the facet counts per assortment and per type. A gap gets that part of the store fetched directly (the
-   phase 2 method; the whole store when the gap can't be pinned to an assortment), up to MAX_CRAWLS stores. A
+   phase 2 method: the one assortment and type that are off, else the assortments, else the whole store), within
+   MAX_CRAWL_PAGES, the stores whose last good list is oldest first. A
    store that still doesn't add up keeps its previous list and date ("stale"), or, with no previous list, keeps
    today's with the status "incomplete"; either way the step reports it.
 7. Spot checks: SPOT_CHECKS stores that added up are fetched in full and compared, to measure how often a list
@@ -46,7 +47,7 @@ STORES_MAX_AGE = 86400
 RECENT_DAYS = 14  # the head reads launches this recent, since a new wine's stock rows can lag its launch
 SLICE_ABOVE = 600  # range assortments larger than this are fetched per type: fewer sort ties, fewer extra passes
 MAX_HEAD_PAGES = 10
-MAX_CRAWLS = 40  # stores fetched directly per run; stores beyond this that don't add up go stale
+MAX_CRAWL_PAGES = 600  # first-pass pages of direct fetches per run (~5 min); stores beyond this go stale
 SPOT_CHECKS = 2
 KEEP = ("productId", "productNumber", "productNameBold", "productNameThin", "producerName", "supplierName",
         "vintage", "country", "originLevel1", "originLevel2", "categoryLevel2", "categoryLevel3", "assortmentText",
@@ -188,66 +189,96 @@ def fetch_stock(sb: SB, pids: list[str]) -> tuple[dict[str, dict], list[str]]:
 
 
 def listing(h: dict, orders: dict | None, here: dict[str, list], products: dict[str, dict],
-            crawls: dict[str | None, dict]) -> tuple[dict[str, list], dict]:
+            crawls: dict[tuple, dict], today: str) -> tuple[dict[str, list], dict]:
     """One store's wines {productId: [stock, shelf]} (stock None = no row yet: not stocked), and its check.
 
     Targets: the head's facet counts per assortment and per type, or, for a part fetched directly (the order-only
-    search, a crawl), that search's own count: it is the newer of the two. A wine in a fetched part counts under
-    that part's assortment, even if an earlier search said otherwise (a wine moved while the run went on)."""
+    search, a crawl of a whole assortment), that search's own count: it is the newer of the two. A wine in a
+    fetched part counts under that part's assortment, even if an earlier search said otherwise (it moved while the
+    run went on). Crawl keys are (assortment, type), None meaning any.
+
+    Stock rows for wines not launched yet that the store's own pages don't list are deliveries ahead of the launch,
+    before the wine joins the store's assortment: listed (they arrive), never counted, never dropped by a crawl."""
     gaps: dict[str, list] = {}
     moved: dict[str, str] = {}
 
     def assortment(pid: str) -> str | None:
         return moved.get(pid) or (products.get(pid) or {}).get("assortmentText")
 
-    if None in crawls:  # the whole store was fetched directly: that is the list
-        out = crawls[None]
+    def kind(pid: str) -> str | None:
+        return (products.get(pid) or {}).get("categoryLevel2")
+
+    on_pages = {_pid(p) for p in h["newest"]}
+    early = {pid for pid in here if _launch(products.get(pid) or {}) > today and pid not in on_pages
+             and assortment(pid) != ORDER_ONLY}
+    if (None, None) in crawls:  # the whole store was fetched directly: that is the list
+        out = crawls[(None, None)]
         listed = {pid: here.get(pid, [None, None]) for pid in (_pid(p) for p in out["products"])}
+        listed |= {pid: here[pid] for pid in early}
         if not out["complete"]:
             gaps["all"] = [out["doc_count"], out["unique"]]
-        return listed, _check(gaps, listed, here)
+        return listed, _check(gaps, listed, here, early)
     want = dict(h["by_assortment"])
     if sum(want.values()) != h["doc_count"]:
         gaps["facets"] = [h["doc_count"], sum(want.values())]
     listed = {pid: v for pid, v in here.items() if assortment(pid) != ORDER_ONLY}
-    for p in h["newest"]:  # on the store's own pages: in its assortment, with a row or not
-        if assortment(_pid(p)) != ORDER_ONLY:
-            listed.setdefault(_pid(p), here.get(_pid(p), [None, None]))
-    parts = dict(crawls)
-    if orders is not None:
-        parts[ORDER_ONLY] = orders
-    for a, out in parts.items():  # a part fetched directly replaces what rows and head said about it
+    for pid in on_pages:  # on the store's own pages: in its assortment, with a row or not
+        if assortment(pid) != ORDER_ONLY:
+            listed.setdefault(pid, here.get(pid, [None, None]))
+    parts = list(crawls.items()) + ([((ORDER_ONLY, None), orders)] if orders is not None else [])
+    for (a, t), out in parts:  # a part fetched directly replaces what rows and head said about it
         members = {_pid(p) for p in out["products"]}
         moved |= dict.fromkeys(members, a)
-        listed = {pid: v for pid, v in listed.items() if pid in members or assortment(pid) != a}
+        listed = {pid: v for pid, v in listed.items()
+                  if pid in members or pid in early or assortment(pid) != a or (t is not None and kind(pid) != t)}
         for pid in members:
             listed.setdefault(pid, here.get(pid, [None, None]))
-        want[a] = out["doc_count"]
+        if t is None:
+            want[a] = out["doc_count"]
         if not out["complete"]:
-            gaps[a] = [out["doc_count"], out["unique"]]
-    have = collections.Counter(assortment(pid) for pid in listed)
+            gaps[a if t is None else f"{a} / {t}"] = [out["doc_count"], out["unique"]]
+    counted = [pid for pid in listed if pid not in early]
+    have = collections.Counter(assortment(pid) for pid in counted)
     for a in set(want) | set(have):
         if want.get(a, 0) != have.get(a, 0):
             gaps.setdefault(a if a is not None else "none", [want.get(a, 0), have.get(a, 0)])
-    if not parts.keys() - {ORDER_ONLY}:  # types: the head's count is the target unless part of it was re-fetched
-        types = collections.Counter((products.get(pid) or {}).get("categoryLevel2") for pid in listed)
+    if not crawls:  # types: the head's count is the target unless part of the store was re-fetched
+        types = collections.Counter(kind(pid) for pid in counted)
         for t in set(h["by_type"]) | set(types):
             if h["by_type"].get(t, 0) != types.get(t, 0):
                 gaps.setdefault(f"type {t}", [h["by_type"].get(t, 0), types.get(t, 0)])
-    return listed, _check(gaps, listed, here)
+    return listed, _check(gaps, listed, here, early)
 
 
-def _check(gaps: dict, listed: dict, here: dict) -> dict:
-    return {"gaps": gaps, "no_row": sum(1 for v in listed.values() if v[0] is None),
+def _check(gaps: dict, listed: dict, here: dict, early: set) -> dict:
+    return {"gaps": gaps, "no_row": sum(1 for v in listed.values() if v[0] is None), "early": len(early),
             "rows_outside": sum(1 for pid in here if pid not in listed)}
 
 
-def crawl_parts(gaps: dict) -> list[str | None]:
-    """What to fetch directly for these gaps: the assortments that are off, or the whole store."""
-    parts = [a for a in gaps if a != ORDER_ONLY and not a.startswith("type ")]
-    if ORDER_ONLY in gaps or any(a in ("none", "facets") for a in parts) or not parts:
-        return [None] if gaps else []
-    return parts
+def crawl_parts(gaps: dict) -> list[tuple]:
+    """What to fetch directly for these gaps, as (assortment, type) with None for any: the one assortment and type
+    that are off by the same amount, else the assortments that are off, else the whole store."""
+    if not gaps:
+        return []
+    a_gaps = {k: v for k, v in gaps.items() if not k.startswith("type ")}
+    t_gaps = {k.removeprefix("type "): v for k, v in gaps.items() if k.startswith("type ")}
+    if not a_gaps or a_gaps.keys() & {ORDER_ONLY, "none", "facets", "all"}:
+        return [(None, None)]
+    if len(a_gaps) == 1 and len(t_gaps) == 1:
+        (a, (wa, ha)), = a_gaps.items()
+        (t, (wt, ht)), = t_gaps.items()
+        if ha - wa == ht - wt:
+            return [(a, t)]
+    return [(a, None) for a in a_gaps]
+
+
+def crawl_pages(h: dict, part: tuple) -> int:
+    """First-pass pages a crawl of this part costs, from the head's facet counts."""
+    a, t = part
+    n = h["doc_count"] if a is None else h["by_assortment"].get(a, 0)
+    if t is not None:
+        n = min(n, h["by_type"].get(t, n))
+    return max(1, -(-(n or 0) // 30))
 
 
 def fetch(http: Http) -> dict:
@@ -291,8 +322,10 @@ def fetch(http: Http) -> dict:
                 out[sid][pid] = [row["stock"], row["shelf"]]
         return out
 
-    def crawl(sid: str, a: str | None) -> dict:
-        return sb.search_all(_in_store(sid, **({"assortmentText": a} if a else {})), max_age=ASSORTMENT_MAX_AGE)
+    def crawl(sid: str, part: tuple) -> dict:
+        a, t = part
+        extra = {k: v for k, v in (("assortmentText", a), ("categoryLevel2", t)) if v}
+        return sb.search_all(_in_store(sid, **extra), max_age=ASSORTMENT_MAX_AGE)
 
     def add_new(found: Iterable[dict]) -> None:
         """Wines seen only in a direct fetch: their stock rows too, which may touch other stores."""
@@ -305,17 +338,26 @@ def fetch(http: Http) -> dict:
             gone.extend(lost)
             inverted = by_store()
 
-    # Check every store; fetch the parts that don't add up directly (at most MAX_CRAWLS stores), check again.
+    # Check every store; fetch the parts that don't add up directly, within MAX_CRAWL_PAGES: the stores whose
+    # last good list is oldest first, so a store left stale tonight comes first tomorrow. Then check again.
+    prev = load_json(OUT) if (DATA / OUT).exists() else {"stores": {}, "wines": {}}
     inverted = by_store()
-    gapped: dict[str, list[str | None]] = {}
+    gapped: dict[str, list[tuple]] = {}
     for sid, h in heads.items():
         if h["status"] == 200:
-            _, check = listing(h, orders.get(sid), inverted.get(sid, {}), products, {})
+            _, check = listing(h, orders.get(sid), inverted.get(sid, {}), products, {}, today.isoformat())
             if check["gaps"]:
                 gapped[sid] = crawl_parts(check["gaps"])
-    capped = sorted(gapped, key=lambda s: heads[s]["doc_count"] or 0)[MAX_CRAWLS:]  # smallest stores first
-    crawls: dict[str, dict[str | None, dict]] = {
-        sid: {a: crawl(sid, a) for a in parts} for sid, parts in gapped.items() if sid not in capped}
+    budget, chosen = MAX_CRAWL_PAGES, []
+    for sid in sorted(gapped, key=lambda s: (prev["stores"].get(s, {}).get("checked_at") or 0,
+                                             sum(crawl_pages(heads[s], p) for p in gapped[s]))):
+        cost = sum(crawl_pages(heads[sid], p) for p in gapped[sid])
+        if cost <= budget:
+            chosen.append(sid)
+            budget -= cost
+    capped = [sid for sid in gapped if sid not in chosen]
+    crawls: dict[str, dict[tuple, dict]] = dict(zip(chosen, _pmap(
+        lambda sid: {p: crawl(sid, p) for p in gapped[sid]}, chosen)))
     add_new(out for c in crawls.values() for out in c.values())
     if gapped:
         lap("crawls")
@@ -324,26 +366,26 @@ def fetch(http: Http) -> dict:
         h = heads[sid]
         if h["status"] != 200:
             return {}, {"gaps": {"head": [h["status"], None]}}
-        return listing(h, orders.get(sid), inverted.get(sid, {}), products, crawls.get(sid, {}))
+        return listing(h, orders.get(sid), inverted.get(sid, {}), products, crawls.get(sid, {}), today.isoformat())
 
     # Spot checks: fetch a few stores that added up in full, and compare.
     rnd = random.Random(today.isoformat())
     ok = sorted(sid for sid in stores if sid not in gapped and heads[sid]["status"] == 200 and heads[sid]["doc_count"])
     spots = rnd.sample(ok, min(SPOT_CHECKS, len(ok)))
-    spot_crawls = {sid: crawl(sid, None) for sid in spots}
+    spot_crawls = dict(zip(spots, _pmap(lambda sid: crawl(sid, (None, None)), spots)))
     add_new(spot_crawls.values())
     spot = []
     for sid, out in spot_crawls.items():
         listed, _ = assemble(sid)
         full = {_pid(p) for p in out["products"]}
-        spot.append({"store": sid, "complete": out["complete"], "listed": len(listed), "fetched": len(full),
-                     "missing": len(full - set(listed)), "extra": len(set(listed) - full)})
-        if out["complete"] and full != set(listed):
-            crawls[sid] = {None: out}  # the fetched list wins
+        mine = {pid for pid in listed if pid in full or _launch(products.get(pid) or {}) <= today.isoformat()}
+        spot.append({"store": sid, "complete": out["complete"], "listed": len(mine), "fetched": len(full),
+                     "missing": len(full - mine), "extra": len(mine - full)})  # pre-launch deliveries aside
+        if out["complete"] and full != mine:
+            crawls[sid] = {(None, None): out}  # the fetched list wins
     if spots:
         lap("spot_checks")
 
-    prev = load_json(OUT) if (DATA / OUT).exists() else {"stores": {}, "wines": {}}
     now = time.time()
     out_stores: dict[str, dict] = {}
     for sid in stores:
@@ -377,6 +419,7 @@ def fetch(http: Http) -> dict:
                    "order_only_wines": len({_pid(p) for o in orders.values() for p in o["products"]}),
                    "head_pages": sum(h.get("pages") or 0 for h in heads.values()),
                    "no_row": sum(s.get("no_row") or 0 for s in out_stores.values()),
+                   "early_rows": sum(s.get("early") or 0 for s in out_stores.values()),
                    "in_no_store": sum(1 for pid in products if pid not in carried), "stock_404": len(gone),
                    "store_wine_pairs": sum(carried.values()), "gapped_stores": len(gapped),
                    "capped_stores": len(capped), "crawled_parts": sum(len(c) for c in crawls.values()),

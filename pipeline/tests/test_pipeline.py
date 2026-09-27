@@ -72,7 +72,7 @@ def test_phase2_rows_keep_cohort_and_date() -> None:
     assert accepted and all(int(r["vivino_id"]) < 9_000_000 for r in accepted), accepted[:3]
     assert calls["vivino"] == 0  # ratings are step 3's job
     tracked = (STATE / "matches.csv").read_text()
-    assert "Decoy Winery" not in tracked and "3.9" not in tracked  # no Vivino names or ratings in git
+    assert "Sentinel" not in tracked and "3.9" not in tracked  # no Vivino names or ratings in git
 
 
 def test_only_new_or_changed_wines_are_matched() -> None:

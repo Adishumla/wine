@@ -20,6 +20,16 @@ def _load(name: str, since: float) -> dict:
     return json.loads(path.read_text()) if path.exists() and path.stat().st_mtime >= since else {}
 
 
+def _alias(host: str) -> str:
+    """A host's role, not its name (the Algolia host name holds an app id)."""
+    for end, name in ((".algolia.net", "algolia (Vivino search)"), (".algolianet.com", "algolia (Vivino search)"),
+                      ("api.vivino.com", "api.vivino.com"), ("api-extern.systembolaget.se", "systembolaget api"),
+                      ("systembolaget.se", "systembolaget site"), ("githubusercontent.com", "github raw")):
+        if host.endswith(end):
+            return name
+    return "other"
+
+
 def hosts(since: float = 0.0) -> list[dict]:
     """Per host: requests, statuses, 429/403 counts, median and p90 latency, and 429 pauses."""
     per: dict[str, dict] = collections.defaultdict(lambda: {"statuses": collections.Counter(), "ms": [], "pauses": 0})
@@ -28,7 +38,7 @@ def hosts(since: float = 0.0) -> list[dict]:
             r = json.loads(line)
             if r["ts"] < since:
                 continue
-            h = per[r.get("host") or r.get("group", "?")]
+            h = per[_alias(r.get("host") or r.get("group", "?"))]
             if r.get("event") == "pause":
                 h["pauses"] += 1
                 continue

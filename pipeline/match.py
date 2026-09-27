@@ -22,6 +22,8 @@ import csv
 import datetime
 import time
 
+import httpx
+
 from . import state, vivino
 from .assortment import OUT
 from .matching import MATCHER_VERSION, Candidate, Wine, match
@@ -136,6 +138,8 @@ def run(http: Http, limit: int | None = None, today: datetime.date | None = None
                 done["found_on_research"] += 1
     except Blocked as e:
         res["blocked"] = str(e)  # what was matched is kept; the rest keep their previous rows or wait
+    except (RuntimeError, httpx.HTTPError) as e:
+        res["error"] = type(e).__name__ + (f": {e}" if isinstance(e, RuntimeError) else "")  # kept as for Blocked
 
     state.write_matches(list(rows.values()))
     save_json("match_details.json", details)

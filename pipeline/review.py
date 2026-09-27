@@ -36,8 +36,10 @@ def items(group: str, n: int) -> list[dict]:
         with (DATA / "first_pass.csv").open(newline="") as f:
             first = {(r["article"], r["vivino_id"]): r for r in csv.DictReader(f)}
     labels = state.labels()
+    # Wines matched elsewhere (the nightly on GitHub) have no evidence here until a local `match` run.
     pool = sorted(a for a, r in state.matches().items()
-                  if r["band"] == "accept" and group_of(r) == group and (a, r["vivino_id"]) not in labels)
+                  if r["band"] == "accept" and group_of(r) == group and (a, r["vivino_id"]) not in labels
+                  and a in details and a in wines)
     picked = random.Random(f"{SEED}-{group}").sample(pool, min(n, len(pool)))
     out = []
     for a in picked:

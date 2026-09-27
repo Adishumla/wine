@@ -79,7 +79,9 @@ STORES = [
 ]
 knobs: dict = {"local_gap": True, "stock_fail": set(), "vivino_403": False,
                "head_fail": set(), "head_unstable": False, "facets_drop": {}, "order_extra": set(),
-               "hidden_from_range": set(), "stock_404": set(), "stock_bad": set()}
+               "hidden_from_range": set(), "stock_404": set(), "stock_bad": set(), "algolia_500": False}
+CANARY = {"winery": "Sentinel Winery", "region": "Sentinelshire", "average": 4.37, "count": 424242,
+          "body": "Sentinel body text"}  # Vivino-side values that must never reach a log (test_logs)
 KNOB_DEFAULTS = {k: (v.copy() if hasattr(v, "copy") else v) for k, v in knobs.items()}
 calls: collections.Counter = collections.Counter()
 
@@ -112,6 +114,8 @@ def search(q: dict) -> httpx.Response:
     if sid and knobs["head_unstable"] and q.get("sortBy") == "ProductLaunchDate" and page == 2:
         ids = [ids[0] - 1] + ids[1:]  # ties on launch date: page 2 repeats page 1's last wine, skips its own first
     calls["store search" if sid else "range search"] += 1
+    if sid:
+        calls[f"store {sid} {q.get('assortmentText')} {q.get('categoryLevel2')}"] += 1
     return httpx.Response(200, json={
         "metadata": {"docCount": doc, "totalPages": -(-doc // 30), "nextPage": -1 if page * 30 >= doc else page + 1},
         "products": [{k: v for k, v in sel[i].items() if not k.startswith("_")} for i in ids],
@@ -127,6 +131,8 @@ def algolia(req: httpx.Request) -> httpx.Response:
     calls["algolia"] += 1
     if knobs["vivino_403"]:
         return httpx.Response(403, json={"message": "blocked"})
+    if knobs["algolia_500"]:
+        return httpx.Response(500, text=CANARY["body"])
     query = parse_qs(json.loads(req.content)["params"])["query"][0].lower()
     hits = []
     for w in W:
@@ -138,8 +144,8 @@ def algolia(req: httpx.Request) -> httpx.Response:
                              "region": {"country": w["_cc"], "name": "Somewhere"},
                              "statistics": {"ratings_average": 3.9, "ratings_count": 400}})
             hits.append({"id": 9_000_000 + int(w["productId"]), "name": w["productNameBold"], "type_id": 1,
-                         "winery": {"name": "Decoy Winery"}, "region": {"country": "us", "name": "Napa"},
-                         "statistics": {"ratings_average": 4.4, "ratings_count": 50}})
+                         "winery": {"name": CANARY["winery"]}, "region": {"country": "us", "name": CANARY["region"]},
+                         "statistics": {"ratings_average": CANARY["average"], "ratings_count": CANARY["count"]}})
     return httpx.Response(200, json={"hits": hits[:10]})
 
 
@@ -178,6 +184,8 @@ def handler(req: httpx.Request) -> httpx.Response:
     if u.hostname == "api.vivino.com":
         calls["vivino"] += 1
         wid = int(u.path.rsplit("/", 1)[1])
+        if knobs["vivino_403"]:
+            return httpx.Response(403, text=CANARY["body"])
         return httpx.Response(200, json={"id": wid, "statistics": {"ratings_average": 3.8, "ratings_count": 420}})
     raise AssertionError(f"unexpected host {u.hostname}")
 
