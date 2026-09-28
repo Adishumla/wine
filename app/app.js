@@ -33,6 +33,8 @@ const volume = ml => (ml >= 1000 ? `${nf1.format(ml / 1000)} l` : `${nf.format(m
 const date = d => (d ? dateFmt.format(new Date(`${d}T12:00:00`)) : '');
 const tier = r => (r == null ? 'r0' : r >= 4.2 ? 'r5' : r >= 4.0 ? 'r4' : r >= 3.8 ? 'r3' : r >= 3.5 ? 'r2' : 'r1');
 const storeName = id => S.stores.find(s => s.id === id)?.name ?? id;
+// Bottle photos from Systembolaget's image CDN (widths 20-800 px; the only thing fetched at view time).
+const bottle = (id, width) => `https://product-cdn.systembolaget.se/productimages/${encodeURIComponent(id)}/${encodeURIComponent(id)}_${width}.webp`;
 const shortDate = t => t.slice(5).replace(/^(\d\d)-(\d\d)/, (_, mo, d) => `${+d}/${+mo}`); // "2026-09-27 21:10" -> "27/9 21:10"
 
 // Not launched yet: "arrives", even when bottles are already in the store (they can't be sold before launch day).
@@ -165,10 +167,18 @@ const list = new VList($('#list'), ROW_H, () => {
   const n = rowTpl.cloneNode(true);
   n._f = { avg: n.querySelector('.avg'), cnt: n.querySelector('.cnt'), score: n.querySelector('.score'), n: n.querySelector('.n'),
     t: n.querySelector('.t'), sub: n.querySelector('.sub'), stock: n.querySelector('.stock'), st: n.querySelector('.st'),
-    shelf: n.querySelector('.shelf'), price: n.querySelector('.p'), vol: n.querySelector('.vol') };
+    shelf: n.querySelector('.shelf'), price: n.querySelector('.p'), vol: n.querySelector('.vol'),
+    img: n.querySelector('.bottle') };
+  n._f.img.addEventListener('error', () => n._f.img.classList.add('none')); // no photo: an empty slot, not a broken icon
   return n;
 }, (n, it) => {
   const w = it.w, f = n._f;
+  const src = bottle(w.id, 60);
+  if (f.img.dataset.src !== src) {
+    f.img.dataset.src = src;
+    f.img.classList.remove('none');
+    f.img.src = src;
+  }
   f.score.className = `score ${tier(w.rating)}`;
   f.avg.textContent = w.rating != null ? w.rating.toFixed(1) : '–';
   f.cnt.textContent = w.rating != null ? compact(w.count) : 'no rating';
@@ -300,9 +310,14 @@ function openDetail(it) {
       <p class="kind">${esc([w.type, w.organic ? 'Organic' : ''].filter(Boolean).join(' · '))}</p>
       <button class="close" type="button" aria-label="Close">×</button>
     </div>
-    <h2 class="d-name">${esc(w.name)} <span>${esc(w.thin || '')}</span></h2>
-    <p class="d-prod">${esc([w.prod, w.vint].filter(Boolean).join(' · '))}</p>
-    <p class="d-price">${esc(price(w.price))}${w.vol && w.vol !== 750 ? ` <small>${esc(volume(w.vol))}</small>` : ''}</p>
+    <div class="d-hero">
+      <div class="d-text">
+        <h2 class="d-name">${esc(w.name)} <span>${esc(w.thin || '')}</span></h2>
+        <p class="d-prod">${esc([w.prod, w.vint].filter(Boolean).join(' · '))}</p>
+        <p class="d-price">${esc(price(w.price))}${w.vol && w.vol !== 750 ? ` <small>${esc(volume(w.vol))}</small>` : ''}</p>
+      </div>
+      <img class="d-img" src="${esc(bottle(w.id, 200))}" alt="" width="52" height="184" decoding="async" onerror="this.remove()">
+    </div>
     <div class="cards">
       <div class="card stock ${stockClass(it)}">
         <div class="k">${esc(here)}</div>

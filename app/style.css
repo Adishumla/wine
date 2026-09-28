@@ -124,6 +124,8 @@ main { padding-bottom: calc(24px + env(safe-area-inset-bottom)); }
 .r4 { background: var(--r4); } .r5 { background: var(--r5); } .r0 { background: var(--r0); }
 .score.r1 { color: var(--fg); }
 
+.bottle { flex: none; width: 20px; height: 64px; object-fit: contain; }
+.bottle.none { visibility: hidden; }
 .main { flex: 1; min-width: 0; }
 .main > div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .name .n { font-weight: 650; }
@@ -182,6 +184,9 @@ dialog::backdrop { background: rgb(0 0 0 / .45); }
 .meta { color: var(--muted); font-size: 12px; margin: 10px 0 0; }
 
 .kind { margin: 0; color: var(--muted); font-size: 13px; }
+.d-hero { display: flex; align-items: flex-start; gap: 16px; }
+.d-text { flex: 1; min-width: 0; }
+.d-img { flex: none; width: 52px; height: 184px; object-fit: contain; margin-top: -4px; }
 .d-name { margin: 0; font-size: 21px; line-height: 1.2; }
 .d-name span { font-weight: 400; }
 .d-prod { margin: 4px 0 0; color: var(--muted); }

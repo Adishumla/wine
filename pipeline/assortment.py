@@ -349,8 +349,12 @@ def fetch(http: Http) -> dict:
             if check["gaps"]:
                 gapped[sid] = crawl_parts(check["gaps"])
     budget, chosen = MAX_CRAWL_PAGES, []
-    for sid in sorted(gapped, key=lambda s: (prev["stores"].get(s, {}).get("checked_at") or 0,
-                                             sum(crawl_pages(heads[s], p) for p in gapped[s]))):
+    def last_good(sid: str) -> float:
+        """When the store last had a list that added up: an incomplete list counts as never."""
+        entry = prev["stores"].get(sid, {})
+        return entry.get("checked_at") or 0 if entry.get("status") in ("ok", "crawled", "stale") else 0
+
+    for sid in sorted(gapped, key=lambda s: (last_good(s), sum(crawl_pages(heads[s], p) for p in gapped[s]))):
         cost = sum(crawl_pages(heads[sid], p) for p in gapped[sid])
         if cost <= budget:
             chosen.append(sid)

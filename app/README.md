@@ -28,6 +28,7 @@ Data from the build step (`pipeline/build.py`):
 
 Rules the app keeps:
 
+- Bottle photos come from Systembolaget's image CDN (60 px wide in rows, 200 in the detail): the only thing the app fetches at view time besides its own files. A wine without a photo gets an empty slot. The page sends no referrer.
 - A rating shows only for an accepted or overridden match. Review, reject, unmatched and "too few ratings on Vivino" all show "no rating" with the reason in the detail.
 - The Vivino link (`vivino.com/w/{id}`) appears only for those same matches.
 - Default sort is the adjusted rating (n·r + m·C)/(n + m), C = 3.9, m = 100; ties by rating count, then name.
