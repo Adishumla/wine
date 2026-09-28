@@ -229,6 +229,32 @@ def test_missing_evidence_is_not_agreement():
     assert band(c) != "accept" and "type not checked" in c.unconfirmed, c
 
 
+def test_measured_sugar_against_vivino_sweetness():
+    # Systembolaget's name has no sweetness word, but 56 g/l isn't the Brut; the sweet entry is fine.
+    w = wine("Tradition", "", "Clairette Die", "Frankrike", "Mousserande vin")
+    w.sugar = 56.0
+    c = score(w, hit(33, "Tradition Brut", "Clairette Die", "fr", 3), "q")
+    assert any(x.startswith("sugar") for x in c.contradictions) and band(c) == "reject", c
+    c, b = best_band(w, [hit(33, "Tradition Brut", "Clairette Die", "fr", 3), hit(34, "Tradition Doux", "Clairette Die", "fr", 3)])
+    assert c.vivino_id == 34 and not c.contradictions, c
+    w.sugar = 8.0  # a real Brut
+    c = score(w, hit(33, "Tradition Brut", "Clairette Die", "fr", 3), "q")
+    assert not c.contradictions, c
+    w.sugar = None  # unknown (Systembolaget lists 0): no evidence either way
+    c = score(w, hit(34, "Tradition Doux", "Clairette Die", "fr", 3), "q")
+    assert not any(x.startswith("sugar") for x in c.contradictions), c
+
+
+def test_producer_one_letter_off_is_another_producer():
+    w = wine("Tacchino", "Barbera del Monferrato", "Tacchino", "Italien", grapes=["Barbera"])
+    c, b = best_band(w, [hit(35, "Barbera del Monferrato", "Facchino", "it", 1)])
+    assert b != "accept" and c.producer_score < 80, (c, b)
+    # A silent h is a spelling variant: Hermitage and Ermitage are the same place.
+    w = wine("Chapoutier", "L'Ermite Hermitage", "M.Chapoutier", "Frankrike")
+    c, b = best_band(w, [hit(36, "Ermitage \"L'Ermite\"", "M. Chapoutier", "fr", 1)])
+    assert b == "accept", (c, b)
+
+
 if __name__ == "__main__":
     n = 0
     for name, fn in list(globals().items()):

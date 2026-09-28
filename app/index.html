@@ -7,7 +7,12 @@
   <meta name="theme-color" content="#16110f" media="(prefers-color-scheme: dark)">
   <meta name="robots" content="noindex">
   <meta name="referrer" content="no-referrer">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Wine">
   <title>Wine by Store</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="icon" type="image/png" href="icons/icon-192.png">
   <link rel="stylesheet" href="style.css">
   <script type="module" src="app.js"></script>
 </head>
@@ -22,11 +27,13 @@
       <input id="q" type="search" placeholder="Name, producer, grape, region…" autocomplete="off"
              autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="search" aria-label="Search wines">
     </div>
+    <div id="quick" class="chips quick" role="toolbar" aria-label="Quick picks"></div>
     <div class="chips" role="toolbar" aria-label="Filters and sort">
       <label class="chip sel"><span class="sr">Sort</span><select id="sort">
         <option value="adj">Best rated</option>
         <option value="rating">Highest rating</option>
         <option value="count">Most ratings</option>
+        <option value="value">Best value</option>
         <option value="price">Price: low to high</option>
         <option value="price-desc">Price: high to low</option>
         <option value="new">Newest</option>
@@ -45,6 +52,7 @@
   </header>
 
   <main>
+    <p id="offline" class="note" hidden></p>
     <p id="note" class="note" hidden></p>
     <div id="list" class="list"></div>
     <p id="empty" class="empty" hidden>No wines match. <button id="empty-reset" type="button">Reset filters</button></p>
@@ -71,6 +79,7 @@
       </div>
       <input id="store-q" type="search" placeholder="Store, street or town" autocomplete="off" autocorrect="off"
              autocapitalize="off" spellcheck="false" aria-label="Search stores">
+      <button id="compare-btn" class="compare-btn" type="button">Compare stores for your filters</button>
       <div id="store-list" class="store-list"></div>
       <p id="store-meta" class="meta"></p>
     </div>

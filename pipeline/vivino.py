@@ -1,4 +1,4 @@
-"""Vivino access: Algolia search (index WINES_prod) and api.vivino.com/wines/{id}.
+"""Vivino access: Algolia search (index WINES_prod), api.vivino.com/wines/{id} and /vintages/{id}.
 
 vivino.com itself is never contacted. The Algolia app id and public search-only
 key come from the environment (VIVINO_ALGOLIA_APP_ID / VIVINO_ALGOLIA_API_KEY)
@@ -57,3 +57,10 @@ def search(http: Http, creds: dict, query: str, hits: int = 10, max_age: float |
 def wine(http: Http, wine_id: int, max_age: float | None = None) -> tuple[int, dict | None]:
     r = http.get(f"https://api.vivino.com/wines/{wine_id}", max_age=max_age)
     return r.status, r.data()
+
+
+def wine_of_vintage(http: Http, vintage_id: int) -> int | None:
+    """The wine id of a vintage id (vivino.com/wines/{id} links, as Vivino's app shares them)."""
+    r = http.get(f"https://api.vivino.com/vintages/{vintage_id}")
+    wine_id = ((r.data() or {}).get("wine") or {}).get("id") if r.ok else None
+    return int(wine_id) if wine_id else None

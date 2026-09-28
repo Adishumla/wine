@@ -6,9 +6,11 @@
   matcher change costs no network for queries already asked).
 - Wines not found on Vivino (band reject) are searched again with fresh Algolia responses, since new launches
   often aren't listed yet: weekly for the first two months after launch, then monthly (`searched_at`).
-- New wines are cohort "p4"; rows from phase 2 are "p2" (state.py). The report and the audit work per assortment
-  and cohort, and the build shows a new accept's rating once its group meets the precision bar.
-- `limit` caps the wines matched in one run (widely carried wines first); the rest wait for the next run.
+- New wines are cohort "p4", or "p7" for order-only wines no store carries (orders.py); rows from phase 2 are "p2"
+  (state.py). The report and the audit work per assortment and cohort, and the build shows a new accept's rating
+  once its group meets the precision bar.
+- `limit` caps the wines matched in one run (widely carried wines first, order-only wines last); the rest wait for
+  the next run.
 - Writes state/matches.csv (ids only; rows of wines no longer in any store stay), data/match_details.json (both
   sides' evidence, gitignored), data/review_queue.csv (the review band) and data/match.json (this run's counts).
 
@@ -24,10 +26,11 @@ import time
 
 import httpx
 
-from . import state, vivino
+from . import orders, state, vivino
 from .assortment import OUT
 from .matching import MATCHER_VERSION, Candidate, Wine, match
 from .net import DATA, Blocked, Http, load_json, save_json
+from .report import group_of
 
 RESEARCH_NEW_DAYS, RESEARCH_NEW_EVERY, RESEARCH_EVERY = 60, 7, 30
 FRESH = 86400  # a re-search takes Algolia responses younger than this: a same-day rerun costs nothing
@@ -61,7 +64,8 @@ def research_due(row: dict, launch: str | None, today: datetime.date) -> bool:
 
 
 def run(http: Http, limit: int | None = None, today: datetime.date | None = None) -> dict:
-    wines = load_json(OUT)["wines"]
+    store = load_json(OUT)["wines"]
+    wines = orders.catalog()
     today = today or datetime.date.today()
     now = today.isoformat()
     old = state.matches()
@@ -83,7 +87,7 @@ def run(http: Http, limit: int | None = None, today: datetime.date | None = None
         if ov:
             vid = ov["vivino_id"].strip()
             row = {**_base(p, w), "vivino_id": "" if vid.lower() == "none" else vid, "band": "override",
-                   "cohort": prev["cohort"] if prev else "p4"}
+                   "cohort": prev["cohort"] if prev else _cohort(p, store)}
             same = prev and all(prev.get(k) == str(row.get(k, "")) for k in ("vivino_id", "band", "sb_name", "sb_vintage"))
             row["matched_at"] = prev["matched_at"] if same else now
             row["searched_at"] = prev.get("searched_at", "") if prev else ""
@@ -112,7 +116,8 @@ def run(http: Http, limit: int | None = None, today: datetime.date | None = None
         queries += 1
         return vivino.search(http, creds, q, max_age=FRESH if fresh else None)
 
-    res: dict = {"wines": len(wines), "kept": kept, "matcher_version": MATCHER_VERSION}
+    res: dict = {"wines": len(wines), "order_only": len(wines) - len(store), "kept": kept,
+                 "matcher_version": MATCHER_VERSION}
     done: collections.Counter = collections.Counter()
     by_group: dict[str, collections.Counter] = collections.defaultdict(collections.Counter)
     try:
@@ -124,7 +129,7 @@ def run(http: Http, limit: int | None = None, today: datetime.date | None = None
             row = {**_base(p, w), "vivino_id": str(b.vivino_id) if b and r["band"] != "reject" else "",
                    "band": r["band"], "producer_score": b.producer_score if b else "",
                    "name_score": b.name_score if b else "", "total_score": b.total if b else "",
-                   "cohort": prev["cohort"] if prev else "p4", "searched_at": now}
+                   "cohort": prev["cohort"] if prev else _cohort(p, store), "searched_at": now}
             same = prev and all(prev.get(k) == str(row.get(k, "")) for k in
                                 ("vivino_id", "band", "sb_name", "sb_vintage", "matcher_version"))
             row["matched_at"] = prev["matched_at"] if same else now
@@ -133,7 +138,7 @@ def run(http: Http, limit: int | None = None, today: datetime.date | None = None
                                   "second": _candidate(r["second"])}
             done[why] += 1
             if why == "new":
-                by_group[row["assortment"]][r["band"]] += 1
+                by_group[group_of(row)][r["band"]] += 1
             elif why == "research" and r["band"] != "reject":
                 done["found_on_research"] += 1
     except Blocked as e:
@@ -156,6 +161,10 @@ def run(http: Http, limit: int | None = None, today: datetime.date | None = None
             "unmatched_current": len(wines) - len(current), "rows": len(rows), "at": time.time()}
     save_json("match.json", res)
     return res
+
+
+def _cohort(p: dict, store: dict) -> str:
+    return "p4" if str(p["productId"]) in store else "p7"
 
 
 def _base(p: dict, w: Wine) -> dict:

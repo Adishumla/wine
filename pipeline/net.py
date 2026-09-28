@@ -91,6 +91,7 @@ class Resp:
     text: str
     elapsed_ms: float | None
     from_cache: bool
+    content: bytes = b""  # the raw body, for download() only
 
     def json(self) -> Any:
         return json.loads(self.text)
@@ -253,6 +254,10 @@ class Http:
             max_age: float | None = None) -> Resp:
         return self.request("GET", url, params=params, headers=headers, cache=cache, max_age=max_age)
 
+    def download(self, url: str) -> Resp:
+        """A binary GET (a product photo), paced like any request to its host; never cached as JSON."""
+        return self.request("GET", url, cache=False, binary=True)
+
     def post_json(self, url: str, body: Any, headers: dict | None = None, cache: bool = True,
                   max_age: float | None = None) -> Resp:
         return self.request("POST", url, body=body, headers=headers, cache=cache, max_age=max_age)
@@ -266,6 +271,7 @@ class Http:
         headers: dict | None = None,
         cache: bool = True,
         max_age: float | None = None,
+        binary: bool = False,
     ) -> Resp:
         host = urlsplit(url).hostname or ""
         policy = policy_for(host)
@@ -297,10 +303,15 @@ class Http:
                 err = None
                 status = 0
                 text = ""
+                content = b""
                 extra: dict = {}
                 try:
                     r = self.client.request(method, full_url, json=body, headers=headers)
-                    status, text = r.status_code, r.text
+                    status = r.status_code
+                    if binary:
+                        content = r.content
+                    else:
+                        text = r.text
                     if status == 429:
                         # Everything the server says about its limit, so the report can state it.
                         extra = {"body": text[:200], "headers": {k: v for k, v in r.headers.items()
@@ -355,7 +366,7 @@ class Http:
                     json.dump({"url": full_url, "status": status, "text": text, "elapsed_ms": round(ms, 1),
                                "fetched_at": time.time()}, f)
                 tmp.replace(cpath)  # a killed run never leaves a half-written entry
-            return Resp(full_url, status, text, ms, False)
+            return Resp(full_url, status, text, ms, False, content)
 
 
 def save_json(name: str, data: Any) -> Path:

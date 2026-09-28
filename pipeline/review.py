@@ -4,7 +4,7 @@
 group that still needs checks per the report (a sample, or all accepts for a small group), and writes
 data/review.html: both sides' details, links to systembolaget.se and vivino.com/w/{id} for Adam to open himself,
 keys R / W / U. The page holds Vivino data, so it stays in data/ (gitignored) and is opened as a local file.
-`import_answers(text)` takes the page's "Copy answers" CSV and merges it into state/labels.csv.
+Its "Copy answers" CSV is merged by worklist.import_answers (`python -m pipeline.run labels`).
 """
 
 from __future__ import annotations
@@ -14,16 +14,17 @@ import json
 import random
 
 from . import state
-from .assortment import OUT
 from .net import DATA, load_json
+from .orders import catalog
 
 SEED = 20260927
 
 
 def _wines() -> dict[str, dict]:
-    """Systembolaget's side by article: today's wines, and store 1208's phase 2 file for wines since gone."""
+    """Systembolaget's side by article: today's wines (orders.catalog), and store 1208's phase 2 file for wines since
+    gone."""
     old = load_json("store_1208.json")["wines"] if (DATA / "store_1208.json").exists() else []
-    return {str(w["productNumber"]): w for w in [*old, *load_json(OUT)["wines"].values()]}
+    return {str(w["productNumber"]): w for w in [*old, *catalog().values()]}
 
 
 def items(group: str, n: int) -> list[dict]:
@@ -46,23 +47,31 @@ def items(group: str, n: int) -> list[dict]:
         w, b = wines[a], details[a]["best"]
         s = details[a].get("second")
         fp = first.get((a, str(b["vivino_id"])), {"verdict": "not reviewed", "reason": "matcher accept"})
-        out.append({
-            "article": a, "vivino_id": str(b["vivino_id"]), "claude": fp["verdict"], "reason": fp["reason"],
-            "sb": {"Name": f"{w.get('productNameBold') or ''} {w.get('productNameThin') or ''}".strip(),
-                   "Producer": w.get("producerName"), "Supplier": w.get("supplierName"), "Vintage": w.get("vintage"),
-                   "Country": w.get("country"),
-                   "Region": " / ".join(x for x in (w.get("originLevel1"), w.get("originLevel2")) if x),
-                   "Grapes": ", ".join(g for g in w.get("grapes") or [] if isinstance(g, str)),
-                   "Alcohol": f"{w['alcoholPercentage']} %" if w.get("alcoholPercentage") else "",
-                   "Type": w.get("categoryLevel2"), "Volume": f"{w['volume']} ml" if w.get("volume") else "",
-                   "Packaging": w.get("packagingLevel1"), "Organic": "yes" if w.get("isOrganic") else "no",
-                   "Assortment": group},
-            "vv": {"Name": b["name"], "Winery": b["winery"], "Country": b["country"], "Region": b.get("region", ""),
-                   "Alcohol": f"{b['alcohol']} %" if b.get("alcohol") not in ("", 0, "0", None) else "",
-                   "Vintages": b.get("years", ""), "Ratings": b.get("algolia_count", "")},
-            "second": f"{s['name']} ({s['winery']})" if s else "",
-        })
+        out.append({"article": a, "vivino_id": str(b["vivino_id"]), "claude": fp["verdict"], "reason": fp["reason"],
+                    "sb": sb_side(w, group), "vv": vv_side(b),
+                    "second": f"{s['name']} ({s['winery']})" if s else ""})
     return out
+
+
+def sb_side(w: dict, group: str) -> dict:
+    """Systembolaget's facts for a hand check."""
+    return {"Name": f"{w.get('productNameBold') or ''} {w.get('productNameThin') or ''}".strip(),
+            "Producer": w.get("producerName"), "Supplier": w.get("supplierName"), "Vintage": w.get("vintage"),
+            "Country": w.get("country"),
+            "Region": " / ".join(x for x in (w.get("originLevel1"), w.get("originLevel2")) if x),
+            "Grapes": ", ".join(g for g in w.get("grapes") or [] if isinstance(g, str)),
+            "Alcohol": f"{w['alcoholPercentage']} %" if w.get("alcoholPercentage") else "",
+            "Sugar": f"{w['sugarContentGramPer100ml'] * 10:g} g/l" if w.get("sugarContentGramPer100ml") else "",
+            "Type": w.get("categoryLevel2"), "Volume": f"{w['volume']} ml" if w.get("volume") else "",
+            "Packaging": w.get("packagingLevel1"), "Organic": "yes" if w.get("isOrganic") else "no",
+            "Assortment": group}
+
+
+def vv_side(c: dict) -> dict:
+    """A Vivino candidate's facts (from the match evidence) for a hand check."""
+    return {"Name": c["name"], "Winery": c["winery"], "Country": c["country"], "Region": c.get("region", ""),
+            "Alcohol": f"{c['alcohol']} %" if c.get("alcohol") not in ("", 0, "0", None) else "",
+            "Vintages": c.get("years", ""), "Ratings": c.get("algolia_count", "")}
 
 
 def planned() -> list[dict]:
@@ -81,10 +90,6 @@ def build(group: str | None, n: int) -> tuple[int, str]:
     path = DATA / "review.html"
     path.write_text(page)
     return len(its), str(path)
-
-
-def import_answers(text: str) -> int:
-    return state.add_labels(list(csv.DictReader(text.strip().splitlines())))
 
 
 PAGE = """<!doctype html>

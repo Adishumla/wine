@@ -13,6 +13,7 @@ import json
 from pipeline.tests.mock import BY_ID, DATA, STATE, calls, fresh, knobs  # noqa: I001 (sets up first)
 
 from pipeline import assortment, match as match_step, run, state  # noqa: E402
+from pipeline.build import expand  # noqa: E402
 from pipeline.report import group_of, groups  # noqa: E402
 
 TODAY = datetime.date.today().isoformat()
@@ -186,9 +187,9 @@ def test_audit_page_and_labels() -> None:
     assert "vivino.com/w/" in page and "vivino.com/wines/" not in page
     items = json.loads(page.split("const ITEMS = ", 1)[1].split(";\n", 1)[0].replace("<\\/", "</"))
     assert len(items) == 5 and all(i["sb"]["Assortment"] == g for i in items)
-    from pipeline import review
+    from pipeline import worklist
     text = "article,vivino_id,verdict,note\n" + "\n".join(f'{i["article"]},{i["vivino_id"]},right,""' for i in items)
-    assert review.import_answers(text) == 5
+    assert worklist.import_answers(text)["labels"] == 5
     assert run.main(["report"]) == 0 and f"| {g} |" in (DATA / "report.md").read_text()
     need = {k: v["more_to_check"] for k, v in groups().items() if v["accept"]}
     assert run.main(["audit"]) == 0  # no group: every group that still needs checks, small groups in full
@@ -206,7 +207,7 @@ def test_build_shows_new_ratings_once_checked() -> None:
 
     def built() -> dict[str, dict]:
         assert run.main(["build"]) == 0
-        return {w["art"]: w for w in json.loads((DATA / "app" / "wines.json").read_text())["wines"]}
+        return {w["art"]: expand(w) for w in json.loads((DATA / "app" / "wines.json").read_text())["wines"]}
 
     b = built()
     for r in accepted:  # only the ones Adam called right have a rating so far: no group is fully checked
@@ -224,6 +225,88 @@ def test_build_shows_new_ratings_once_checked() -> None:
                        "note": ""}])
     b = built()
     assert b[todo[0]["article"]]["band"] == "review" and b[todo[0]["article"]]["rat"] is None
+
+
+
+def test_review_loop() -> None:
+    """Reports from the app (issues, via a fake gh), the queue page, its answers, and what the build then shows."""
+    import subprocess
+    from pipeline import reports, worklist
+    subprocess.run(["git", "init", "-q", str(STATE)], check=True)
+    subprocess.run(["git", "-C", str(STATE), "remote", "add", "origin", "git@github.com:owner/private.git"], check=True)
+    rows = matches()
+    accepts = sorted((r for r in rows.values() if r["band"] == "accept"), key=lambda r: r["article"])
+    rated, review = accepts[:4], accepts[4:6]
+    for r in review:  # the mock's matcher is sure of everything: two wines it wasn't sure of
+        rows[r["article"]]["band"] = "review"
+    state.write_matches(list(rows.values()))
+    (DATA / "ratings.json").write_text(json.dumps({r["vivino_id"]: {"average": 4.0, "count": 300, "checked_at": TODAY}
+                                                   for r in [*rated, *review] if r["vivino_id"]}))
+    state.add_labels([{"article": r["article"], "vivino_id": r["vivino_id"], "verdict": "right", "note": ""}
+                      for r in rated])
+    a, b, c, d = (r["article"] for r in rated)
+    vid = {r["article"]: r["vivino_id"] for r in rated}
+
+    def body(art: str, answer: str = "") -> str:
+        return (f"Article: {art}\r\nWine: Something, 2020\r\nMatched to: https://www.vivino.com/w/{vid[art]} (accept)"
+                f"\r\n\r\nWhat's wrong (optional):\r\n\r\nRight wine on Vivino, a link or 'none' (optional):\r\n{answer}")
+
+    issues = [{"number": 1, "title": f"Match: {a} Wine", "body": body(a), "createdAt": "2026-09-29T08:00:00Z"},
+              {"number": 2, "title": f"Match: {b} Wine", "body": body(b, "https://www.vivino.com/SE/sv/x/w/777?year=2019")},
+              {"number": 3, "title": f"Match: {c} Wine", "body": body(c, "https://www.vivino.com/wines/5000888")},
+              {"number": 4, "title": f"Match: {d} Wine", "body": body(d)},
+              {"number": 5, "title": "Something else", "body": "Article: 1"}]
+    closed: list[str] = []
+
+    def gh(args: list[str]):
+        if args[:2] == ["issue", "list"]:
+            assert args[args.index("-R") + 1] == "owner/private"
+            return [i for i in issues if str(i["number"]) not in closed]
+        if args[:2] == ["issue", "close"]:
+            closed.append(args[2])
+            return ""
+        raise AssertionError(args)
+
+    out = reports.sync(gh=gh)
+    assert (out["new"], out["open"], out["fixed"]) == (4, 2, 2), out
+    rep = state.reports()
+    assert (rep["2"]["suggested_id"], rep["3"]["suggested_id"]) == ("777", "888")  # the vintage looked up
+    assert state.overrides()[b]["vivino_id"] == "777" and state.labels()[(a, vid[a])]["verdict"] == "wrong"
+    assert run.main(["build"]) == 0
+    built = {w["art"]: expand(w) for w in json.loads((DATA / "app" / "wines.json").read_text())["wines"]}
+    meta = json.loads((DATA / "app" / "meta.json").read_text())
+    assert meta["issues"] == "https://github.com/owner/private/issues/new" and set(meta["reported"]) == {f"{x}:{vid[x]}" for x in (a, b, c, d)}
+    assert (built[a]["band"], built[a]["rat"]) == ("reported", None)
+    assert (built[b]["band"], built[b]["viv"]) == ("override", 777)
+
+    # The queue: the open reports first, then the review band; a pasted vintage link is looked up on import.
+    assert run.main(["queue", "--n", "2"]) == 0
+    page = (DATA / "queue.html").read_text()
+    items = json.loads(page.split("const ITEMS = ", 1)[1].split(";\n", 1)[0].replace("<\\/", "</"))
+    assert [i["article"] for i in items[:2]] == [a, d] and items[0]["why"] == "reported, issue #1"
+    assert len(items) == 4 and all(i["why"] == "review" for i in items[2:])
+    r1, r2 = items[2], items[3]
+    text = "\n".join(["article,vivino_id,verdict,note,override",
+                       f'{a},{vid[a]},right,"",',                               # the match was right after all
+                       f'{r1["article"]},{r1["current"]},right,"",',            # the matcher's pick, checked
+                       f'{r2["article"]},{r2["current"]},wrong,"",vintage:5000999'])  # another wine
+    out = worklist.import_answers(text)
+    assert out["overrides"] == 1 and out["reports_open"] == 1, out
+    assert state.overrides()[r2["article"]]["vivino_id"] == "999"
+    assert state.labels()[(r2["article"], "999")]["verdict"] == "right"
+    assert state.reports()["1"]["status"] == "kept"
+    assert run.main(["build"]) == 0
+    built = {w["art"]: expand(w) for w in json.loads((DATA / "app" / "wines.json").read_text())["wines"]}
+    assert (built[a]["band"], built[a]["rat"]) == ("accept", 4.0)
+    assert (built[r1["article"]]["band"], built[r1["article"]]["rat"]) == ("checked", 4.0)
+    assert (built[r2["article"]]["band"], built[r2["article"]]["viv"]) == ("override", 999)
+
+    # Issue 4 closed on GitHub before it was resolved: withdrawn, and its "wrong" label goes with it.
+    closed.append("4")
+    out = reports.sync(gh=gh, close=True)
+    assert state.reports()["4"]["status"] == "withdrawn" and (d, vid[d]) not in state.labels()
+    assert sorted(closed) == ["1", "2", "3", "4"] and out["closed"] == 3, (closed, out)
+    assert reports.sync(gh=gh, close=True)["open_issues"] == 0
 
 
 if __name__ == "__main__":

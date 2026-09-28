@@ -48,18 +48,20 @@ TIERS = ("new", *INTERVALS)
 MAX_BACKOFF = 30  # days: a failing id is tried again after 1, 2, 4 ... 30 days
 SAVE_EVERY = 50
 MAX_SERVER_ERRORS = 5  # in a row, each already retried by Http: Vivino is down, don't spend the run on it
-RATED_BANDS = ("accept", "override")  # as build.py
+RATED_BANDS = ("accept", "override")  # as build.py, which also rates a review match checked right ("checked")
 
 
 def rated_ids() -> tuple[set[str], list[str]]:
-    """Vivino ids the app shows a rating for, and any id that isn't a number (a typo in overrides.csv)."""
-    matches, overrides = state.matches(), state.overrides()
+    """Vivino ids the app shows a rating for (accepts, overrides, and matches checked right by hand whatever their
+    band), and any id that isn't a number (a typo in overrides.csv)."""
+    matches, overrides, labels = state.matches(), state.overrides(), state.labels()
     ids, bad = set(), []
     for art in matches.keys() | overrides.keys():
         ov = overrides.get(art)
         band = "override" if ov else matches[art].get("band", "")
         vid = ((ov or matches[art]).get("vivino_id") or "").strip()
-        if band not in RATED_BANDS or not vid or vid.lower() == "none":
+        checked = labels.get((art, vid), {}).get("verdict") == "right"
+        if (band not in RATED_BANDS and not checked) or not vid or vid.lower() == "none":
             continue
         if vid.isdigit():
             ids.add(vid)

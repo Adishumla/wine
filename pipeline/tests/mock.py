@@ -79,7 +79,9 @@ STORES = [
 ]
 knobs: dict = {"local_gap": True, "stock_fail": set(), "vivino_403": False,
                "head_fail": set(), "head_unstable": False, "facets_drop": {}, "order_extra": set(),
-               "hidden_from_range": set(), "stock_404": set(), "stock_bad": set(), "algolia_500": False}
+               "hidden_from_range": set(), "stock_404": set(), "stock_bad": set(), "algolia_500": False,
+               "photo_404": set()}
+WEBP = b"RIFF\x1a\x00\x00\x00WEBPVP8 fake photo"
 CANARY = {"winery": "Sentinel Winery", "region": "Sentinelshire", "average": 4.37, "count": 424242,
           "body": "Sentinel body text"}  # Vivino-side values that must never reach a log (test_logs)
 KNOB_DEFAULTS = {k: (v.copy() if hasattr(v, "copy") else v) for k, v in knobs.items()}
@@ -90,7 +92,8 @@ def search(q: dict) -> httpx.Response:
     sid = q.get("storeId")
     if sid:
         assert q.get("isInStoreAssortmentSearch") == "true", q
-    assert sid or q.get("assortmentText") != ORDER, "the order-only range is never fetched nationwide"
+    if not sid and q.get("assortmentText") == ORDER:
+        calls["order range"] += 1  # the orders step only, never the stores' fetch
     if sid in knobs["head_fail"] and q.get("sortBy") == "ProductLaunchDate":
         return httpx.Response(500)
     base = [w for w in W if (sid in w["_in"] if sid else w["productId"] not in knobs["hidden_from_range"])]
@@ -176,6 +179,11 @@ def handler(req: httpx.Request) -> httpx.Response:
                     for s in sorted(BY_ID[pid]["_rows"])]
             return httpx.Response(200, json={"totalNumberOfStores": len(rows), "storeStocks": rows})
         return httpx.Response(404)
+    if u.hostname == "product-cdn.systembolaget.se":
+        pid = u.path.split("/")[2]
+        calls["photo"] += 1
+        assert u.path.endswith(f"/{pid}_60.webp"), u.path
+        return httpx.Response(404) if pid in knobs["photo_404"] else httpx.Response(200, content=WEBP)
     if u.hostname == "raw.githubusercontent.com":
         return httpx.Response(200, text="const VIVINO_ALGOLIA_APP_ID = 'TESTAPP123'\n"
                                         "const VIVINO_ALGOLIA_SEARCH_KEY = 'fedcba9876543210fedcba9876543210'\n")
@@ -186,6 +194,8 @@ def handler(req: httpx.Request) -> httpx.Response:
         wid = int(u.path.rsplit("/", 1)[1])
         if knobs["vivino_403"]:
             return httpx.Response(403, text=CANARY["body"])
+        if "/vintages/" in u.path:  # a vintage id is its wine id + 5,000,000 here
+            return httpx.Response(200, json={"id": wid, "year": 2020, "wine": {"id": wid - 5_000_000}})
         return httpx.Response(200, json={"id": wid, "statistics": {"ratings_average": 3.8, "ratings_count": 420}})
     raise AssertionError(f"unexpected host {u.hostname}")
 

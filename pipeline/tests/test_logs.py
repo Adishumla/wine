@@ -40,7 +40,7 @@ def test_normal_run() -> None:
     fresh()
     knobs["local_gap"] = False
     text = ""
-    for argv in (["fetch"], ["match"], ["refresh"], ["build"], ["report"]):
+    for argv in (["fetch"], ["orders"], ["match"], ["refresh"], ["build"], ["report"]):
         code, out = quiet(argv)
         assert code == 0, (argv, out)
         text += out if argv != ["report"] else ""  # the report is a local file, not a log (it names nothing either)

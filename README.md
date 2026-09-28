@@ -8,6 +8,6 @@ This repository holds the code only. The data it produces and the matching state
 - `app/`: one static page, plain JS modules, no build step. See `app/README.md`.
 - `.github/workflows/nightly.yml`: the nightly run.
 
-Tests run offline against a mocked Systembolaget and Vivino: `python -m pipeline.tests.test_pipeline` (and `test_assortment`, `test_ratings`, `test_matching`, `test_net`).
+Tests run offline against a mocked Systembolaget and Vivino: `python -m pipeline.tests.test_pipeline` (and `test_assortment`, `test_ratings`, `test_matching`, `test_net`, `test_logs`, `test_photos`, `test_orders`).
 
 Python 3.12; `pip install -r requirements.txt`.

@@ -200,14 +200,17 @@ def test_which_ids_and_state_untouched() -> None:
             {"article": "A3", "vivino_id": "13", "band": "reject"},
             {"article": "A4", "vivino_id": "14", "band": "accept"},  # overridden: none
             {"article": "A5", "vivino_id": "15", "band": "accept"},  # overridden: another id
-            {"article": "A6", "vivino_id": "", "band": "accept"}]
+            {"article": "A6", "vivino_id": "", "band": "accept"},
+            {"article": "A7", "vivino_id": "18", "band": "review"}]  # checked right by hand: shown, so refreshed
     old = {"12": r(4.4, 30, "2026-01-01"), "99": r(4.2, 50, "2026-01-01")}  # no longer shown: kept as they are
     setup(rows, overrides=[("A4", "none"), ("A5", "16"), ("B1", "17"), ("B2", "NONE")], stored=old)
+    state.add_labels([{"article": "A7", "vivino_id": "18", "verdict": "right", "note": ""},
+                      {"article": "A2", "vivino_id": "99", "verdict": "right", "note": ""}])  # not A2's match
     before = {p.name: p.read_bytes() for p in STATE.iterdir()}
     s = run()
-    assert sorted(seen) == [11, 16, 17] and s["ids"] == 3 and s["unmatched_kept"] == 2
+    assert sorted(seen) == [11, 16, 17, 18] and s["ids"] == 4 and s["unmatched_kept"] == 2, (seen, s)
     got = stored()
-    assert set(got) == {"11", "12", "16", "17", "99"} and got["12"] == old["12"] and got["99"] == old["99"]
+    assert set(got) == {"11", "12", "16", "17", "18", "99"} and got["12"] == old["12"] and got["99"] == old["99"]
     assert {p.name: p.read_bytes() for p in STATE.iterdir()} == before  # ratings go to data/, never state/
     assert not list(DATA.glob("*.tmp"))
 

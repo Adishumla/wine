@@ -13,6 +13,7 @@ from pipeline.tests.mock import BY_ID, DATA, FAST_A, LOCAL, STATE, TEMP, calls, 
 import httpx  # noqa: E402
 
 from pipeline import assortment, net, run, state  # noqa: E402
+from pipeline.build import expand  # noqa: E402
 
 
 def out() -> dict:
@@ -206,7 +207,7 @@ def test_build_offline() -> None:
         net.TRANSPORT = transport
     app = DATA / "app"
     w = json.loads((app / "wines.json").read_text())
-    rows = {r["id"]: r for r in w["wines"]}
+    rows = {r["id"]: expand(r) for r in w["wines"]}
     assert len(rows) == len(out()["wines"]) and "30015" not in rows
     assert rows["10000"]["rat"] == 4.1 and rows["10000"]["adj"] == round((500 * 4.1 + 100 * 3.9) / 600, 3)
     assert rows["10002"]["rat"] is None and rows["10002"]["band"] == "review"  # not confirmed: no rating
@@ -224,6 +225,20 @@ def test_build_offline() -> None:
     with (STATE / "matches.csv").open(newline="") as f:
         assert "4.1" not in f.read()  # tracked state holds no ratings
     assert list(csv.reader((STATE / "matches.csv").open()))[0][0] == "article"
+
+
+def test_value() -> None:
+    from pipeline.build import values
+    def wine(ty, price, adj, vol=750):
+        return {"ty": ty, "price": price, "vol": vol, "adj": adj}
+    ws = [wine(0, 100 + i, 3.8 + i / 100) for i in range(7)]  # 100-106 kr, adj 3.80-3.86
+    ws += [wine(0, 400, 4.5), wine(1, 100, 4.9), wine(0, 102, None), wine(0, 206, 4.0, vol=1500)]
+    values(ws)
+    # Peers of each: those seven plus the magnum (103 kr per 75 cl, adj 4.0): median (3.83 + 3.84) / 2 = 3.835.
+    assert ws[0]["val"] == round(3.80 - 3.835, 3) and ws[6]["val"] == round(3.86 - 3.835, 3)
+    assert "val" not in ws[7] and "val" not in ws[8]  # no peers in its price band / its type
+    assert "val" not in ws[9]  # unrated
+    assert ws[10]["val"] == round(4.0 - 3.835, 3)  # a magnum is compared per 75 cl (103 kr)
 
 
 if __name__ == "__main__":

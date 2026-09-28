@@ -34,11 +34,11 @@ on:
         type: boolean
         default: true
       match_limit:
-        description: Wines matched at most
-        default: "300"
+        description: Wines matched at most (about 2.4 Algolia queries each, 1 req/s)
+        default: "800"
       refresh_limit:
         description: Rating lookups at most (1 req/s)
-        default: "600"
+        default: "900"
 
 permissions:
   contents: read
@@ -70,7 +70,7 @@ jobs:
 
       - name: Offline tests (mock data only)
         run: |
-          for t in test_matching test_net test_assortment test_pipeline test_ratings test_logs; do
+          for t in test_matching test_net test_assortment test_pipeline test_ratings test_logs test_photos test_orders; do
             python -m pipeline.tests.$t > "$RUNNER_TEMP/$t.log" 2>&1 || { cat "$RUNNER_TEMP/$t.log"; echo "::error::$t failed"; exit 1; }
           done
 
@@ -132,14 +132,28 @@ jobs:
           if [ "$code" = 2 ]; then echo "::warning::a few stores didn't add up and kept their last list"; exit 0; fi
           exit $code
 
+      - name: Order-only range (weekly)
+        id: orders
+        if: steps.plan.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 20
+        run: python -m pipeline.run orders --max-age 6  # skipped while the last fetch is under 6 days old
+
+      - name: Bottle photos (new wines)
+        id: photos
+        if: steps.plan.outputs.stock == 'true'
+        continue-on-error: true
+        timeout-minutes: 25
+        run: python -m pipeline.run photos --limit 1500
+
       - name: Match new wines
         id: match
         if: steps.plan.outputs.vivino == 'true'
         continue-on-error: true
-        timeout-minutes: 40
+        timeout-minutes: 60
         env:
           WINE_STATE: ${{ github.workspace }}/private/state
-          LIMIT: ${{ inputs.match_limit || '300' }}
+          LIMIT: ${{ inputs.match_limit || '800' }}
         run: python -m pipeline.run match --limit "$LIMIT"
 
       - name: Refresh ratings
@@ -149,7 +163,7 @@ jobs:
         timeout-minutes: 70
         env:
           WINE_STATE: ${{ github.workspace }}/private/state
-          LIMIT: ${{ inputs.refresh_limit || '600' }}
+          LIMIT: ${{ inputs.refresh_limit || '900' }}
         run: python -m pipeline.run refresh --limit "$LIMIT"
 
       - name: Encrypt data
@@ -159,8 +173,9 @@ jobs:
         env:
           DATA_KEY: ${{ secrets.DATA_KEY }}
         run: |
-          files=$(ls -d data/assortment.json data/ratings.json data/match_details.json data/review_queue.csv \
-                  data/last_error.txt data/cache/http/vivino 2>/dev/null || true)
+          files=$(ls -d data/assortment.json data/orders.json data/ratings.json data/match_details.json \
+                  data/review_queue.csv data/last_error.txt data/cache/http/vivino data/app/img data/photos.json \
+                  2>/dev/null || true)
           if [ -z "$files" ]; then echo "nothing to save"; exit 0; fi
           tar czf - $files | openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass env:DATA_KEY -out data.enc
           ls -l data.enc
@@ -225,7 +240,9 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           mkdir -p dist
-          cp app/index.html app/*.js app/style.css dist/
+          cp app/index.html app/*.js app/style.css app/manifest.webmanifest dist/
+          cp -R app/icons dist/icons
+          sed -i "s/__VERSION__/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/" dist/sw.js  # a new worker per deploy
           cp -R data/app dist/data
           npx --yes wrangler@4.86.0 pages deploy dist --project-name wine-v2 --branch main --commit-dirty=true > /dev/null
           echo "deployed"
@@ -234,7 +251,9 @@ jobs:
         if: always()
         env:
           OUTCOMES: >-
-            fetch=${{ steps.fetch.outcome }} match=${{ steps.match.outcome }} refresh=${{ steps.refresh.outcome }}
+            fetch=${{ steps.fetch.outcome }} orders=${{ steps.orders.outcome }} photos=${{ steps.photos.outcome }}
+            match=${{ steps.match.outcome }}
+            refresh=${{ steps.refresh.outcome }}
             build=${{ steps.build.outcome }} commit=${{ steps.commit.outcome }} deploy=${{ steps.deploy.outcome }}
         run: |
           echo "$OUTCOMES"

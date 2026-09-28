@@ -5,8 +5,9 @@
 3. Score producer and name separately; style words never carry a match alone;
    country and colour must not contradict.
 4. Identity before similarity: numbers (Bin 28, 10 years), sparkling style, sweetness and tier
-   words must agree. A conflict rejects the candidate; a detail on one side only, or a country or
-   type we can't check, means it can't be auto-accepted.
+   words must agree, and so must Systembolaget's measured sugar with a sweetness word in Vivino's name
+   (a 56 g/l wine isn't the Brut). A conflict rejects the candidate; a detail on one side only, or a
+   country or type we can't check, means it can't be auto-accepted.
 5. Three bands: accept / review / reject. Thresholds here are provisional until
    the hand-checked sample calibrates them.
 """
@@ -79,6 +80,10 @@ SWEET_LEVELS = (
     ("dry", r"sec|seco|secco|dry|trocken"),
 )
 DEFAULT_SWEETNESS = {"brut"}  # sparkling names often leave it out; still-wine dryness (Vouvray Sec) matters
+# Sugar (g/l) that fits a sweetness word in Vivino's name: the EU bands for sparkling wine, widened for measuring
+# and rounding. "Dry" covers both sparkling sec (17-32) and still trocken, so only a sweet wine contradicts it.
+SUGAR_FITS = {"nature": (0, 8), "extra brut": (0, 9), "brut": (0, 18), "extra dry": (8, 25), "dry": (0, 40),
+              "medium": (8, 70), "sweet": (25, 1000)}
 STOP = {"de", "del", "della", "delle", "di", "da", "do", "dos", "das", "du", "des", "la", "le", "les", "el", "los",
         "las", "il", "lo", "the", "of", "and", "et", "y", "e", "und", "d", "l", "st", "ste", "san", "santa", "sankt",
         "dal", "dei", "degli", "al", "alla", "am", "an", "im", "a", "en", "in", "vom", "von",
@@ -172,7 +177,9 @@ def _tok_eq(a: str, b: str) -> bool:
         return True
     if len(a) <= 3 or len(b) <= 3:
         return False
-    return fuzz.ratio(a, b) >= 85
+    # Spelling variants keep their first letter, but for a silent h (Hermitage, Ermitage); a different one is a
+    # different name (Tacchino, Facchino).
+    return a.removeprefix("h")[:1] == b.removeprefix("h")[:1] and fuzz.ratio(a, b) >= 85
 
 
 def coverage(a: list[str], b: list[str]) -> float:
@@ -203,6 +210,7 @@ class Wine:
     grapes: list[str] = field(default_factory=list)
     origin: str = ""  # originLevel1 and originLevel2, e.g. "Piemonte Langhe"
     organic: bool | None = None  # Systembolaget's isOrganic; None when unknown
+    sugar: float | None = None  # g/l as Systembolaget measured it; None when unknown or listed as 0
 
     @property
     def name(self) -> str:
@@ -222,6 +230,7 @@ class Wine:
             grapes=[g for g in (p.get("grapes") or []) if isinstance(g, str)],
             origin=" ".join(x for x in (p.get("originLevel1"), p.get("originLevel2")) if x),
             organic=p.get("isOrganic"),
+            sugar=round(p["sugarContentGramPer100ml"] * 10, 1) if p.get("sugarContentGramPer100ml") else None,
         )
 
 
@@ -305,6 +314,9 @@ def score(w: Wine, hit: dict, query: str) -> Candidate:
         notes.append("one-sided: " + ",".join(sorted(odd)))
 
     contradictions, unconfirmed = identity(sa, sv)
+    level = _sweetness(sv)
+    if w.sugar is not None and level in SUGAR_FITS and not SUGAR_FITS[level][0] <= w.sugar <= SUGAR_FITS[level][1]:
+        contradictions.append(f"sugar {w.sugar:g} g/l≠{level}")
     # Organic: Systembolaget's flag (or its name when the flag is unknown) against Vivino's name, after removing
     # winery words ("Ecologica" is a brand). An organic entry for a non-organic wine can't auto-accept and ranks
     # below the regular one. An organic wine may match a plain entry (Vivino often omits the word); between
