@@ -13,6 +13,9 @@ name: nightly
 # - Before the deploy tool (third-party code from npm) runs, the private checkout and all plaintext data except the
 #   built site are deleted.
 #
+# Measured 28 Sep: stock ~67 min (7,598 requests at 2 req/s), up to 600 rating lookups ≤ 10 min, a whole night
+# ≈ 80 min; the first run, which fetched all 1,764 ratings, took 97.5 min.
+#
 # Nightly at 00:17 UTC (02:17 in Swedish summer, 01:17 in winter). Stock is skipped on Sunday mornings: stores are
 # closed on Sundays, and Monday's run has the same stock. Each step writes its own output and may fail on its own:
 # build and deploy still run, and the job fails at the end. A few stores left stale is a warning, not a failure.
