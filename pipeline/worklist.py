@@ -181,7 +181,7 @@ function render() {
     return `<section class="card ${i === cur ? "current" : ""} ${a.v || a.link ? "done" : ""}" id="c${i}">
       <div class="muted">${esc(it.why)} · carried by ${esc(it.stores)} stores</div>
       <div class="sides"><div><h2>Systembolaget · ${esc(it.article)}</h2>${dl(it.sb)}
-        <a href="https://www.systembolaget.se/sok/?textQuery=${encodeURIComponent(it.article)}" target="_blank" rel="noopener">systembolaget.se</a></div>
+        <a href="https://www.systembolaget.se/produkt/vin/${encodeURIComponent(it.article)}/" target="_blank" rel="noopener">systembolaget.se</a></div>
         ${cands || '<div class="muted">No candidate found on Vivino.</div>'}</div>
       <div class="actions">${it.cands.map((c, k) => btn("pick" + k, `${k + 1} is right`)).join("")}
         ${btn("wrong", "Neither")}${btn("none", "Not on Vivino")}${btn("unsure", "Unsure")}</div>

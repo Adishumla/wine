@@ -155,7 +155,7 @@ function render() {
     const btn = v => `<button type="button" data-i="${i}" data-v="${v}" class="${a.verdict === v ? "on" : ""}">${v}</button>`;
     return `<section class="card ${i === cur ? "current" : ""}" id="c${i}">
       <div class="sides"><div><h2>Systembolaget · ${esc(it.article)}</h2>${dl(it.sb)}
-        <a href="https://www.systembolaget.se/sok/?textQuery=${encodeURIComponent(it.article)}" target="_blank" rel="noopener">systembolaget.se</a></div>
+        <a href="https://www.systembolaget.se/produkt/vin/${encodeURIComponent(it.article)}/" target="_blank" rel="noopener">systembolaget.se</a></div>
       <div><h2>Vivino · ${esc(it.vivino_id)}</h2>${dl(it.vv)}
         <a href="https://www.vivino.com/w/${encodeURIComponent(it.vivino_id)}" target="_blank" rel="noopener">vivino.com</a></div></div>
       ${it.second ? `<div class="muted">Runner-up: ${esc(it.second)}</div>` : ""}

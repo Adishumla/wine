@@ -100,6 +100,9 @@ const km = (lat1, lng1, lat2, lng2) => {
 // CDN (widths 20-800 px). The large detail photo always comes from the CDN, online only.
 const cdn = (id, width) => `https://product-cdn.systembolaget.se/productimages/${encodeURIComponent(id)}/${encodeURIComponent(id)}_${width}.webp`;
 const thumb = w => (w.img ? `data/img/${encodeURIComponent(w.id)}.webp` : cdn(w.id, 60));
+// The wine's own page on systembolaget.se (its canonical path: name slug and article number; the slug is optional),
+// so the phone can hand it to Systembolaget's app like the Vivino link.
+const sbUrl = w => `https://www.systembolaget.se/produkt/vin/${norm(w.name).replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')}-${encodeURIComponent(w.art)}/`;
 const shortDate = t => t.slice(5).replace(/^(\d\d)-(\d\d)/, (_, mo, d) => `${+d}/${+mo}`); // "2026-09-27 21:10" -> "27/9 21:10"
 
 // Not launched yet: "arrives", even when bottles are already in the store (they can't be sold before launch day).
@@ -531,7 +534,7 @@ function openDetail(it) {
       <div class="card stock ${stockClass(it)}">
         <div class="k">${esc(here)}</div>
         <div class="v">${esc(stockText(it))}</div>
-        <div class="s">${it.order ? 'Order on systembolaget.se, pick up in any store' : it.multi ? 'Per store below' : it.shelf ? `Shelf ${esc(it.shelf)}` : it.stock == null ? 'Not stocked yet' : 'No shelf listed'}</div>
+        <div class="s">${it.order ? `<a href="${esc(sbUrl(w))}" target="_blank" rel="noopener">Order on systembolaget.se</a>, pick up in any store` : it.multi ? 'Per store below' : it.shelf ? `Shelf ${esc(it.shelf)}` : it.stock == null ? 'Not stocked yet' : 'No shelf listed'}</div>
       </div>
       ${ratingCard(w)}
     </div>
@@ -539,7 +542,7 @@ function openDetail(it) {
     <p class="match">${matchText(w)}</p>
     <dl class="facts">${facts.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('')}</dl>
     <div class="links">
-      <a href="https://www.systembolaget.se/sok/?textQuery=${encodeURIComponent(w.art)}" target="_blank" rel="noopener">systembolaget.se</a>
+      <a href="${esc(sbUrl(w))}" target="_blank" rel="noopener">systembolaget.se</a>
       ${w.viv && RATED.has(w.band) ? `<a href="https://www.vivino.com/w/${encodeURIComponent(w.viv)}" target="_blank" rel="noopener">vivino.com</a>` : ''}
     </div>
     ${reportLine(w)}
