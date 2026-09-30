@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import re
 import unicodedata
 from dataclasses import dataclass, field
@@ -31,6 +32,7 @@ ACCEPT_PRODUCER = 80
 ACCEPT_NAME = 80
 REVIEW_TOTAL = 60
 AMBIGUOUS_MARGIN = 3
+RIVAL_SHARE = 0.05  # a runner-up with fewer ratings than this share of the best's doesn't make a match ambiguous
 
 # Corporate noise: dropped from producer comparison and from names on both sides.
 NOISE = {
@@ -82,6 +84,9 @@ SWEET_LEVELS = (
 DEFAULT_SWEETNESS = {"brut"}  # sparkling names often leave it out; still-wine dryness (Vouvray Sec) matters
 # Sugar (g/l) that fits a sweetness word in Vivino's name: the EU bands for sparkling wine, widened for measuring
 # and rounding. "Dry" covers both sparkling sec (17-32) and still trocken, so only a sweet wine contradicts it.
+RANGE_LEVEL = {"reserva", "reserve", "riserva", "reservado"}  # "(Reserva)" in a Vivino name: see score()
+ABV_GAP = 4.5  # alcohol points apart that make two wines different (a 5 % Moscato d'Asti is not its 42 % grappa)
+POP_WEIGHT, POP_CAP = 1.5, 7.5  # ranking only: a much more rated entry is more likely the one a shop sells
 SUGAR_FITS = {"nature": (0, 8), "extra brut": (0, 9), "brut": (0, 18), "extra dry": (8, 25), "dry": (0, 40),
               "medium": (8, 70), "sweet": (25, 1000)}
 STOP = {"de", "del", "della", "delle", "di", "da", "do", "dos", "das", "du", "des", "la", "le", "les", "el", "los",
@@ -211,6 +216,7 @@ class Wine:
     origin: str = ""  # originLevel1 and originLevel2, e.g. "Piemonte Langhe"
     organic: bool | None = None  # Systembolaget's isOrganic; None when unknown
     sugar: float | None = None  # g/l as Systembolaget measured it; None when unknown or listed as 0
+    abv: float | None = None  # alcohol %, None when unknown
 
     @property
     def name(self) -> str:
@@ -231,6 +237,7 @@ class Wine:
             origin=" ".join(x for x in (p.get("originLevel1"), p.get("originLevel2")) if x),
             organic=p.get("isOrganic"),
             sugar=round(p["sugarContentGramPer100ml"] * 10, 1) if p.get("sugarContentGramPer100ml") else None,
+            abv=p.get("alcoholPercentage") or None,
         )
 
 
@@ -264,11 +271,19 @@ def score(w: Wine, hit: dict, query: str) -> Candidate:
     sb_prod = tokens(w.producer)
     sb_name = tokens(w.name, NAME_KEEP)
     v_win = tokens(winery)
-    v_nm = tokens(v_name, NAME_KEEP)
+    # Vivino writes a range's reserve level in parentheses ("Cabernet Sauvignon (Reserva)"), which shops often leave
+    # out: it counts only when Systembolaget's name has it too. Anything else in parentheses names a cuvée and stays.
+    optional = [t for t in re.findall(r"\(([^)]*)\)", v_name) if set(tokens(t)) <= RANGE_LEVEL]
+    v_nm = tokens(re.sub("|".join(r"\(" + re.escape(t) + r"\)" for t in optional) or "$^", " ", v_name), NAME_KEEP)
+    v_nm += [t for t in tokens(" ".join(optional)) if t in sb_name]
 
     # Producer: the producer field vs Vivino winery, or the winery named inside the SB name
     # (Systembolaget's producer is sometimes the importer or a parent company).
     sp, vw = significant(sb_prod) or sb_prod, significant(v_win) or v_win
+    # A place in a producer name ("El Coto de Rioja" for the winery "El Coto") says nothing about who made the wine.
+    place = set(tokens(w.origin))
+    if [t for t in sp if t not in place] and [t for t in vw if t not in place]:
+        sp, vw = [t for t in sp if t not in place], [t for t in vw if t not in place]
     direct = 0.5 * coverage(sp, vw) + 0.5 * coverage(vw, sp) if sp and vw else 0.0
     in_name = 0.0
     if contains_all(vw, sb_name) and sum(len(t) for t in vw) >= 5:
@@ -314,6 +329,9 @@ def score(w: Wine, hit: dict, query: str) -> Candidate:
         notes.append("one-sided: " + ",".join(sorted(odd)))
 
     contradictions, unconfirmed = identity(sa, sv)
+    v_abv = _float(hit.get("alcohol"))
+    if w.abv and v_abv and abs(w.abv - v_abv) > ABV_GAP:
+        contradictions.append(f"alcohol {w.abv:g}≠{v_abv:g}")
     level = _sweetness(sv)
     if w.sugar is not None and level in SUGAR_FITS and not SUGAR_FITS[level][0] <= w.sugar <= SUGAR_FITS[level][1]:
         contradictions.append(f"sugar {w.sugar:g} g/l≠{level}")
@@ -348,12 +366,19 @@ def score(w: Wine, hit: dict, query: str) -> Candidate:
     elif not (sb_cc and v_country):
         unconfirmed.append("country unknown")  # missing evidence is not agreement
     allowed = TYPES.get(w.category)
+    # Semi-sparkling and low-alcohol wines (Moscato d'Asti, 5 %) are still wine to Systembolaget, sparkling to Vivino.
+    if allowed and w.category in ("Vitt vin", "Rosévin", "Rött vin") and \
+            ((w.abv is not None and w.abv <= 8.5) or SEMI_SPARKLING & set(sb_name)):
+        allowed = allowed | {3}
     if allowed and type_id and type_id not in allowed:
         contradictions.append(f"type {w.category}≠{type_id}")
     elif not (allowed and type_id):
         unconfirmed.append("type not checked")
 
     total = 0.4 * producer_score + 0.6 * name_score
+    # Whether a Vivino word only matched by spelling (Cocobon ~ Cocoon), not word for word.
+    sb_words, v_words = set(sb_prod) | set(sb_name), set(v_win) | set(v_nm)
+    fuzzy = any(t not in sb_words and any(_tok_eq(t, u) for u in sb_words) for t in v_words)
     return Candidate(
         vivino_id=int(hit.get("id") or hit.get("objectID") or 0),
         name=v_name,
@@ -369,7 +394,7 @@ def score(w: Wine, hit: dict, query: str) -> Candidate:
         notes=notes,
         query=query,
         unconfirmed=unconfirmed,
-        evidence={"organic_agrees": sb_organic == v_organic,
+        evidence={"organic_agrees": sb_organic == v_organic, "fuzzy": fuzzy,
                   "region": region.get("name") or "", "alcohol": hit.get("alcohol") or "",
                   "non_vintage": hit.get("non_vintage"),
                   "years": " ".join(str(v.get("year")) for v in (hit.get("vintages") or [])[:12])},
@@ -381,8 +406,16 @@ def band(c: Candidate | None, runner_up: Candidate | None = None) -> str:
         return "reject"
     weak = any("style words only" in n or "winery/style only" in n for n in c.notes)
     if c.producer_score >= ACCEPT_PRODUCER and c.name_score >= ACCEPT_NAME and not weak and not c.unconfirmed:
-        if runner_up and not runner_up.contradictions and c.total - runner_up.total < AMBIGUOUS_MARGIN:
-            return "review"  # two near-identical candidates: a human decides
+        # Two near-identical candidates: a human decides. A runner-up with a sliver of the ratings (an empty duplicate
+        # entry, a misspelt copy) is no rival: a shop sells the wine people rate. Unless it fits at least as well and
+        # word for word where the pick only fits by spelling ("Cocobon" for Systembolaget's "Cocoon", whose own entry
+        # is rare).
+        exact_rival = runner_up and runner_up.total >= c.total and c.evidence.get("fuzzy") and \
+            not runner_up.evidence.get("fuzzy")
+        rival = runner_up and not runner_up.contradictions and (
+            runner_up.ratings_count >= RIVAL_SHARE * c.ratings_count or exact_rival)
+        if rival and c.total - runner_up.total < AMBIGUOUS_MARGIN:
+            return "review"
         return "accept"
     if c.total >= REVIEW_TOTAL:
         return "review"
@@ -398,32 +431,58 @@ def _query_text(s: str) -> str:
 
 
 def queries(w: Wine) -> list[str]:
-    """Producer + name (producer only if not already in the name), name only, producer + grape."""
+    """Producer + name (producer only if not already in the name), name only, producer + grape, and a short one: the
+    producer's longest word + the name without grape and tier words (or + the grape). Algolia requires every word, so
+    the short one finds entries whose name leaves out the grape or a tier ("Les Fumées Blanches"), or whose winery
+    is named more briefly than Systembolaget's producer ("Ruppertsberger" for "Ruppertsberger Weinkeller Hoheburg")."""
     name = _query_text(w.name)
     producer = _query_text(w.producer)
     distinctive = [t for t in producer.split() if len(t) >= 4 and t not in STOP]
     in_name = any(t in name.split() for t in distinctive)
     q1 = name if in_name or not producer else f"{producer} {name}"
     q3 = f"{producer} {_query_text(w.grapes[0])}" if w.grapes else producer
+    grape_words = {t for g in w.grapes for t in fold(g).split()}
+    lead = max(distinctive, key=len) if distinctive else ""
+    core = [t for t in name.split() if t not in grape_words and t not in TIER and t not in STOP and len(t) > 1
+            and t != lead]
+    rest = core or ([t for t in _query_text(w.grapes[0]).split()] if w.grapes else [])
+    q4 = " ".join(([lead] if lead else []) + rest) if rest else ""
     out: list[str] = []
-    for q in (q1, name, q3):
+    for q in (q1, name, q3, q4):
         q = q.strip()
         if q and q not in out:
             out.append(q)
     return out
 
 
+def _float(v) -> float | None:
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if 0 < f < 80 else None
+
+
+def popularity(c: Candidate) -> float:
+    return min(POP_CAP, POP_WEIGHT * math.log10(1 + c.ratings_count))
+
+
 def rank(cands: list[Candidate]) -> list[Candidate]:
-    # Non-contradicting candidates first, then by total, then organic status agreeing; one entry per Vivino id.
+    # Non-contradicting candidates first, then by total plus a little for being much rated (the plain wine a shop sells
+    # over a rarer cuvée of the same name) when the organic status agrees, then organic status agreeing; one entry per
+    # Vivino id. band() still compares raw totals, so a popular runner-up never makes a match look safer.
     seen: dict[int, Candidate] = {}
     for c in cands:
         if c.vivino_id not in seen or c.total > seen[c.vivino_id].total:
             seen[c.vivino_id] = c
-    return sorted(seen.values(), key=lambda c: (not c.contradictions, c.total, c.evidence.get("organic_agrees", True)),
-                  reverse=True)
+    def key(c: Candidate) -> tuple:
+        agrees = c.evidence.get("organic_agrees", True)  # never boost the regular entry of an organic wine
+        return not c.contradictions, c.total + (popularity(c) if agrees else 0.0), agrees
+
+    return sorted(seen.values(), key=key, reverse=True)
 
 
-def match(w: Wine, search: Callable[[str], list[dict]], max_queries: int = 3,
+def match(w: Wine, search: Callable[[str], list[dict]], max_queries: int = 4,
           stop_on_accept: bool = False) -> dict:
     """Pool the candidates of every query fallback, then decide. A close competitor found by a later
     query must be in the runner-up comparison, so stopping at the first accept is opt-in."""

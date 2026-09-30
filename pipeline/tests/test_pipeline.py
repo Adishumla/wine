@@ -161,6 +161,21 @@ def test_overrides_labels_and_matcher_changes() -> None:
     assert run.main(["match"]) == 0
 
 
+def test_checked_pairing_survives_a_rematch() -> None:
+    rows = matches()
+    a = next(a for a, r in sorted(rows.items()) if r["band"] == "accept")
+    rows[a]["vivino_id"] = "4242"  # a pairing the matcher wouldn't pick, checked right by hand
+    state.write_matches(list(rows.values()))
+    state.add_labels([{"article": a, "vivino_id": "4242", "verdict": "right", "note": ""}])
+    match_step.MATCHER_VERSION, old = "sticky-version", match_step.MATCHER_VERSION
+    try:
+        assert run.main(["match"]) == 0
+        assert matches()[a]["vivino_id"] == "4242" and last_run()["matched"].get("kept_checked") == 1
+    finally:
+        match_step.MATCHER_VERSION = old
+    assert run.main(["match"]) == 0
+
+
 def test_vivino_block_keeps_previous_rows() -> None:
     before = matches()
     fresh("vivino")

@@ -100,7 +100,12 @@ def test_queries_fallbacks():
     assert queries(w)[0] == "birgi crudo nerello mascalese frappato"
     # corporate noise and descriptive filler never reach Algolia
     w = wine("Borgogno", "Barolo Riserva", "Giacomo Borgogno & Figli", "Italien", grapes=["Nebbiolo"])
-    assert queries(w) == ["borgogno barolo riserva", "giacomo borgogno nebbiolo"], queries(w)
+    assert queries(w) == ["borgogno barolo riserva", "giacomo borgogno nebbiolo", "borgogno barolo"], queries(w)
+    # the short query: the producer's longest word + the name without grape and tier words
+    w = wine("Les Fumées Blanches", "Sauvignon Blanc", "François Lurton", grapes=["Sauvignon blanc"])
+    assert queries(w)[-1] == "francois fumees blanches", queries(w)
+    w = wine("R Riesling", "Organic", "Ruppertsberger Weinkeller Hoheburg eG", "Tyskland", "Vitt vin", ["Riesling"])
+    assert queries(w)[-1] == "ruppertsberger riesling", queries(w)  # no name left but the grape
     w = wine("Doppio Passo", "Nero d'Avola Organic", "Botter Spa", "Italien")
     assert queries(w)[0] == "botter doppio passo nero d avola", queries(w)
 
@@ -253,6 +258,67 @@ def test_producer_one_letter_off_is_another_producer():
     w = wine("Chapoutier", "L'Ermite Hermitage", "M.Chapoutier", "Frankrike")
     c, b = best_band(w, [hit(36, "Ermitage \"L'Ermite\"", "M. Chapoutier", "fr", 1)])
     assert b == "accept", (c, b)
+
+
+
+def test_alcohol_apart_is_another_wine():
+    w = wine("Nivole", "", "Michele Chiarlo", "Italien", "Vitt vin")
+    w.abv = 5.0
+    grappa = hit(40, "Nivole Grappa di Moscato d'Asti", "Michele Chiarlo", "it", 7)
+    grappa["alcohol"] = 42
+    c = score(w, grappa, "q")
+    assert any(x.startswith("alcohol") for x in c.contradictions), c
+    moscato = hit(41, "Moscato d'Asti Nivole", "Michele Chiarlo", "it", 3)  # sparkling to Vivino, still to Systembolaget
+    moscato["alcohol"] = 5
+    c, b = best_band(w, [grappa, moscato])
+    assert c.vivino_id == 41 and not c.contradictions, c
+    w.abv = 12.5  # a normal still wine may not match a sparkling entry
+    assert any(x.startswith("type") for x in score(w, moscato, "q").contradictions)
+
+
+def test_reserve_level_in_parentheses_is_optional():
+    w = wine("Casillero del Diablo", "Cabernet Sauvignon", "Concha y Toro", "Chile", grapes=["Cabernet sauvignon"])
+    c, b = best_band(w, [hit(42, "Cabernet Sauvignon (Reserva)", "Casillero del Diablo", "cl", 1, n=180000),
+                         hit(43, "Leyenda Cabernet Sauvignon", "Casillero del Diablo", "cl", 1, n=600)])
+    assert c.vivino_id == 42 and b == "accept", (c, b)
+    # Other words in parentheses name a cuvée and still count.
+    w = wine("Domaine X", "Chambertin Grand Cru", "Domaine X")
+    c = score(w, hit(44, "Chambertin Grand Cru (Vieilles Vignes)", "Domaine X", "fr", 1), "q")
+    assert band(c) != "accept", c
+
+
+def test_popular_entry_ranks_first_but_never_over_organic():
+    w = wine("Baron de Ley", "Reserva", "Baron de Ley", "Spanien", grapes=["Tempranillo"])
+    c, b = best_band(w, [hit(45, "Viña del Cura Reserva", "Baron de Ley", "es", 1, n=900),
+                         hit(46, "Rioja Reserva", "Baron de Ley", "es", 1, n=78000)])
+    assert c.vivino_id == 46, c
+    w = wine("Jean Biecher", "Riesling Organic Réserve", "Jean Biecher", grapes=["Riesling"])
+    w.organic = True
+    c, b = best_band(w, [hit(47, "Riesling Reserve", "Jean Biecher", "fr", 2, n=4000),
+                         hit(48, "Organic Réserve Riesling", "Jean Biecher", "fr", 2, n=50)])
+    assert c.vivino_id == 48, c
+
+
+def test_place_in_producer_name_is_not_producer_evidence():
+    w = wine("El Coto", "Crianza", "El Coto de Rioja", "Spanien", grapes=["Tempranillo"])
+    w.origin = "Rioja"
+    c = score(w, hit(49, "Crianza", "El Coto", "es", 1), "q")
+    assert c.producer_score == 100, c
+
+
+
+def test_empty_duplicate_is_no_rival():
+    w = wine("Casa Castillo", "El Molar", "Casa Castillo", "Spanien", grapes=["Garnacha"])
+    c, b = best_band(w, [hit(50, "El Molar", "Casa Castillo", "es", 1, n=4300),
+                         hit(51, "El Molar", "Casa Castillo", "es", 1, n=3)])
+    assert c.vivino_id == 50 and b == "accept", (c, b)
+    c, b = best_band(w, [hit(50, "El Molar", "Casa Castillo", "es", 1, n=4300),
+                         hit(52, "El Molar", "Casa Castillo", "es", 1, n=1500)])  # two real entries: a human decides
+    assert b == "review", (c, b)
+    # A rare entry that fits at least as well is still a rival to a popular one.
+    w = wine("Cocoon", "Red Blend", "Bear Creek Winery", "USA")
+    c, b = best_band(w, [hit(53, "Red Blend", "Cocobon", "us", 1, n=17000), hit(54, "Red Blend", "Cocoon", "us", 1, n=20)])
+    assert b == "review", (c, b)
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@
 - New wines are cohort "p4", or "p7" for order-only wines no store carries (orders.py); rows from phase 2 are "p2"
   (state.py). The report and the audit work per assortment and cohort, and the build shows a new accept's rating
   once its group meets the precision bar.
+- A wine whose stored pairing was checked right by hand keeps it when a re-match picks another candidate.
 - `limit` caps the wines matched in one run (widely carried wines first, order-only wines last); the rest wait for
   the next run.
 - Writes state/matches.csv (ids only; rows of wines no longer in any store stay), data/match_details.json (both
@@ -70,6 +71,7 @@ def run(http: Http, limit: int | None = None, today: datetime.date | None = None
     now = today.isoformat()
     old = state.matches()
     overrides = state.overrides()
+    labels = state.labels()
     old_details = load_json("match_details.json") if (DATA / "match_details.json").exists() else {}
     old_queue: dict[str, dict] = {}
     if (DATA / "review_queue.csv").exists():
@@ -130,6 +132,11 @@ def run(http: Http, limit: int | None = None, today: datetime.date | None = None
                    "band": r["band"], "producer_score": b.producer_score if b else "",
                    "name_score": b.name_score if b else "", "total_score": b.total if b else "",
                    "cohort": prev["cohort"] if prev else _cohort(p, store), "searched_at": now}
+            kept = prev and prev.get("vivino_id") and row["vivino_id"] != prev["vivino_id"] and \
+                labels.get((w.article, prev["vivino_id"]), {}).get("verdict") == "right"
+            if kept:  # a pairing checked right by hand stays; only an override moves it
+                row |= {k: prev.get(k, "") for k in ("vivino_id", "band", "producer_score", "name_score", "total_score")}
+                done["kept_checked"] += 1
             same = prev and all(prev.get(k) == str(row.get(k, "")) for k in
                                 ("vivino_id", "band", "sb_name", "sb_vintage", "matcher_version"))
             row["matched_at"] = prev["matched_at"] if same else now
